@@ -200,6 +200,15 @@ def normalize_account_id(account_id: str) -> str:
     return account_id if account_id.startswith("act_") else f"act_{account_id}"
 
 
+def derive_title_from_filename(file_name: str) -> str:
+    stem = Path(file_name or "").stem.strip()
+    if not stem:
+        return "Uploaded Asset"
+    title = re.sub(r"[_\-]+", " ", stem)
+    title = re.sub(r"\s+", " ", title).strip()
+    return title[:120] if title else "Uploaded Asset"
+
+
 def format_graph_error(status_code: int, body):
     if not isinstance(body, dict):
         return f"HTTP {status_code}: {body}"
@@ -415,8 +424,10 @@ def maybe_attach_asset_to_adset(
     primary_text = destination.get("primary_text", "") or ""
     headline = destination.get("headline", "") or ""
     cta_type = destination.get("cta_type", "LEARN_MORE")
+    fallback_title = derive_title_from_filename(file_name)
+    effective_title = headline.strip() or fallback_title
 
-    creative_name = f"Auto {asset_type} | {file_name} | {int(time.time())}"
+    creative_name = f"Auto {asset_type} | {fallback_title} | {int(time.time())}"
     if asset_type == "image":
         creative = graph_post(
             f"{account_id}/adcreatives",
@@ -430,7 +441,7 @@ def maybe_attach_asset_to_adset(
                             "image_hash": asset_ref,
                             "link": destination_url,
                             "message": primary_text,
-                            "name": headline,
+                            "name": effective_title,
                         },
                     }
                 ),
@@ -448,7 +459,7 @@ def maybe_attach_asset_to_adset(
                         "video_data": {
                             "video_id": asset_ref,
                             "message": primary_text,
-                            "title": headline,
+                            "title": effective_title,
                             "call_to_action": {
                                 "type": cta_type,
                                 "value": {"link": destination_url},
@@ -459,7 +470,7 @@ def maybe_attach_asset_to_adset(
             },
         )
 
-    ad_name = f"Auto Ad | {file_name} | {int(time.time())}"
+    ad_name = f"Auto Ad | {fallback_title} | {int(time.time())}"
     ad = graph_post(
         f"{account_id}/ads",
         token,
@@ -527,6 +538,7 @@ def upload_video_resumable(account_id: str, token: str, file_path: Path, progres
             "upload_phase": "finish",
             "upload_session_id": upload_session_id,
             "name": file_name,
+            "title": derive_title_from_filename(file_name),
         },
     )
 
