@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.part
+*.log
+.DS_Store
+
+# local large media/temp artifacts
+drive_videos/
+preview.png
+upload_results.jsonl
+fb_upload_state.json
+
+# local helper scripts runtime output
+/tmp/

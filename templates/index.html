@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FB Ad Media Uploader</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="container">
+    <h1>Facebook Ad Media Uploader</h1>
+    <p class="subtitle">Live progress, ETA, current file, and controls for each section.</p>
+    <p class="subtitle">Version: <strong>{{ app_meta.version }}</strong> | Booted: <strong>{{ app_meta.boot_utc }}</strong></p>
+
+    <section class="card">
+      <h2>1) Google Drive -> Videos</h2>
+      <form id="driveForm" method="post" action="/upload/drive">
+        <label>Google Drive Folder Link</label>
+        <input name="drive_link" type="url" value="{{ defaults['drive_link'] }}" required>
+
+        <label>Ad Account ID</label>
+        <input name="ad_account_id" type="text" value="{{ defaults['ad_account_id'] }}" required>
+
+        <label>Access Token</label>
+        <input name="access_token" type="text" value="{{ defaults['access_token'] }}" required>
+
+        <button id="driveStartBtn" type="submit">Upload Drive Files</button>
+      </form>
+
+      <div id="drivePanel" class="live-status hidden">
+        <div class="live-top-row">
+          <strong id="driveTitle">Drive Upload</strong>
+          <span id="driveJobId">Job: -</span>
+        </div>
+        <div class="live-top-row">
+          <span id="driveStatus" class="queued">queued</span>
+          <span id="driveOverallPct">0%</span>
+        </div>
+        <div class="progress-track"><div id="driveOverallBar" class="progress-fill" style="width:0%"></div></div>
+        <div class="live-meta">
+          <span id="driveStep">Queued</span>
+          <span id="driveEta">ETA: --</span>
+        </div>
+        <div class="current-file">
+          <div><strong>Current File:</strong> <span id="driveCurrentFile">-</span></div>
+          <div class="progress-track file-track"><div id="driveFileBar" class="progress-fill file-fill" style="width:0%"></div></div>
+          <div id="driveFilePct" class="file-pct">0%</div>
+        </div>
+        <div class="controls">
+          <button type="button" id="drivePause">Pause</button>
+          <button type="button" id="driveResume">Resume</button>
+          <button type="button" id="driveStop">Stop</button>
+        </div>
+        <div id="driveError" class="error"></div>
+        <table class="compact-table">
+          <thead>
+            <tr>
+              <th>File</th>
+              <th>Status</th>
+              <th>Progress</th>
+              <th>ID/Error</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="driveRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>2) Manual Multi-Image Upload</h2>
+      <form id="imagesForm" method="post" action="/upload/images" enctype="multipart/form-data">
+        <label>Ad Account ID</label>
+        <input name="ad_account_id" type="text" value="{{ defaults['ad_account_id'] }}" required>
+
+        <label>Access Token</label>
+        <input name="access_token" type="text" value="{{ defaults['access_token'] }}" required>
+
+        <label>Select Images (multiple)</label>
+        <input name="images" type="file" accept="image/*" multiple required>
+
+        <button id="imagesStartBtn" type="submit">Upload Images</button>
+      </form>
+
+      <div id="imagesPanel" class="live-status hidden">
+        <div class="live-top-row">
+          <strong id="imagesTitle">Image Upload</strong>
+          <span id="imagesJobId">Job: -</span>
+        </div>
+        <div class="live-top-row">
+          <span id="imagesStatus" class="queued">queued</span>
+          <span id="imagesOverallPct">0%</span>
+        </div>
+        <div class="progress-track"><div id="imagesOverallBar" class="progress-fill" style="width:0%"></div></div>
+        <div class="live-meta">
+          <span id="imagesStep">Queued</span>
+          <span id="imagesEta">ETA: --</span>
+        </div>
+        <div class="current-file">
+          <div><strong>Current File:</strong> <span id="imagesCurrentFile">-</span></div>
+          <div class="progress-track file-track"><div id="imagesFileBar" class="progress-fill file-fill" style="width:0%"></div></div>
+          <div id="imagesFilePct" class="file-pct">0%</div>
+        </div>
+        <div class="controls">
+          <button type="button" id="imagesPause">Pause</button>
+          <button type="button" id="imagesResume">Resume</button>
+          <button type="button" id="imagesStop">Stop</button>
+        </div>
+        <div id="imagesError" class="error"></div>
+        <table class="compact-table">
+          <thead>
+            <tr>
+              <th>File</th>
+              <th>Status</th>
+              <th>Progress</th>
+              <th>Hash/Error</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="imagesRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>3) Manual Video Upload</h2>
+      <form id="videosForm" method="post" action="/upload/videos" enctype="multipart/form-data">
+        <label>Ad Account ID</label>
+        <input name="ad_account_id" type="text" value="{{ defaults['ad_account_id'] }}" required>
+
+        <label>Access Token</label>
+        <input name="access_token" type="text" value="{{ defaults['access_token'] }}" required>
+
+        <label>Select Videos (multiple)</label>
+        <input name="videos" type="file" accept="video/*" multiple required>
+
+        <button id="videosStartBtn" type="submit">Upload Videos</button>
+      </form>
+
+      <div id="videosPanel" class="live-status hidden">
+        <div class="live-top-row">
+          <strong id="videosTitle">Video Upload</strong>
+          <span id="videosJobId">Job: -</span>
+        </div>
+        <div class="live-top-row">
+          <span id="videosStatus" class="queued">queued</span>
+          <span id="videosOverallPct">0%</span>
+        </div>
+        <div class="progress-track"><div id="videosOverallBar" class="progress-fill" style="width:0%"></div></div>
+        <div class="live-meta">
+          <span id="videosStep">Queued</span>
+          <span id="videosEta">ETA: --</span>
+        </div>
+        <div class="current-file">
+          <div><strong>Current File:</strong> <span id="videosCurrentFile">-</span></div>
+          <div class="progress-track file-track"><div id="videosFileBar" class="progress-fill file-fill" style="width:0%"></div></div>
+          <div id="videosFilePct" class="file-pct">0%</div>
+        </div>
+        <div class="controls">
+          <button type="button" id="videosPause">Pause</button>
+          <button type="button" id="videosResume">Resume</button>
+          <button type="button" id="videosStop">Stop</button>
+        </div>
+        <div id="videosError" class="error"></div>
+        <table class="compact-table">
+          <thead>
+            <tr>
+              <th>File</th>
+              <th>Status</th>
+              <th>Progress</th>
+              <th>ID/Error</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="videosRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    function safeText(v) {
+      return v == null ? "" : String(v);
+    }
+
+    function fmtEta(seconds) {
+      if (seconds == null) return "--";
+      const s = Number(seconds);
+      if (!Number.isFinite(s) || s <= 0) return "0s";
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const r = Math.floor(s % 60);
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m ${r}s`;
+      return `${r}s`;
+    }
+
+      function bindSection(cfg) {
+      const form = document.getElementById(cfg.formId);
+      const panel = document.getElementById(cfg.prefix + "Panel");
+      const startBtn = document.getElementById(cfg.prefix + "StartBtn");
+      const pauseBtn = document.getElementById(cfg.prefix + "Pause");
+      const resumeBtn = document.getElementById(cfg.prefix + "Resume");
+      const stopBtn = document.getElementById(cfg.prefix + "Stop");
+
+      const jobIdEl = document.getElementById(cfg.prefix + "JobId");
+      const statusEl = document.getElementById(cfg.prefix + "Status");
+      const overallPctEl = document.getElementById(cfg.prefix + "OverallPct");
+      const overallBarEl = document.getElementById(cfg.prefix + "OverallBar");
+      const stepEl = document.getElementById(cfg.prefix + "Step");
+      const etaEl = document.getElementById(cfg.prefix + "Eta");
+      const currentFileEl = document.getElementById(cfg.prefix + "CurrentFile");
+      const fileBarEl = document.getElementById(cfg.prefix + "FileBar");
+      const filePctEl = document.getElementById(cfg.prefix + "FilePct");
+      const rowsEl = document.getElementById(cfg.prefix + "Rows");
+      const errorEl = document.getElementById(cfg.prefix + "Error");
+
+      let jobId = null;
+      let timer = null;
+
+      function setButtons(status) {
+        const terminal = ["completed", "failed", "stopped"].includes(status);
+        const paused = status === "paused";
+        const stopping = status === "stopping";
+
+        pauseBtn.disabled = terminal || paused || stopping || !jobId;
+        resumeBtn.disabled = terminal || !paused || !jobId;
+        stopBtn.disabled = terminal || stopping || !jobId;
+        startBtn.disabled = !terminal && !!jobId;
+      }
+
+      async function removeFile(fileName) {
+        if (!jobId) return;
+        try {
+          const body = new URLSearchParams({ file: fileName });
+          const res = await fetch(`/api/jobs/${jobId}/remove-file`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: body.toString(),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          render(data.job);
+        } catch (err) {
+          errorEl.textContent = `Remove error: ${err.message}`;
+        }
+      }
+
+      function renderRows(items) {
+        rowsEl.innerHTML = "";
+        (items || []).forEach((item) => {
+          const tr = document.createElement("tr");
+          const details = item.details || {};
+          const extra = item.error || details.video_id || details.image_hash || "-";
+          const removable = [\"queued\", \"downloading\", \"uploading\"].includes(item.status || \"\");
+          const actionBtn = removable
+            ? `<button type=\"button\" class=\"small-btn remove-file\" data-file=\"${safeText(item.file)}\">Remove</button>`
+            : \"-\";
+          tr.innerHTML = `
+            <td>${safeText(item.file)}</td>
+            <td class="${safeText(item.status)}">${safeText(item.status || "-")}</td>
+            <td>${safeText(item.percent != null ? item.percent + "%" : "-")}</td>
+            <td>${safeText(extra)}</td>
+            <td>${actionBtn}</td>
+          `;
+          rowsEl.appendChild(tr);
+        });
+      }
+
+      function render(job) {
+        panel.classList.remove("hidden");
+        jobIdEl.textContent = `Job: ${safeText(job.job_id || "-")}`;
+        statusEl.textContent = safeText(job.status || "-");
+        statusEl.className = safeText(job.status || "");
+
+        const overall = Math.max(0, Math.min(100, Number(job.overall_percent || 0)));
+        overallPctEl.textContent = `${Math.round(overall)}%`;
+        overallBarEl.style.width = `${overall}%`;
+
+        const filePct = Math.max(0, Math.min(100, Number(job.current_file_percent || 0)));
+        fileBarEl.style.width = `${filePct}%`;
+        filePctEl.textContent = `${Math.round(filePct)}%`;
+
+        stepEl.textContent = safeText(job.step || "-");
+        etaEl.textContent = `ETA: ${fmtEta(job.eta_seconds)}`;
+        currentFileEl.textContent = safeText(job.current_file || "-");
+        errorEl.textContent = safeText(job.error || "");
+        renderRows(job.items || []);
+        setButtons(job.status);
+      }
+
+      async function poll() {
+        if (!jobId) return;
+        try {
+          const res = await fetch(`/api/jobs/${jobId}`, { cache: "no-store" });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          const job = data.job;
+          render(job);
+
+          if (["completed", "failed", "stopped"].includes(job.status)) {
+            if (timer) {
+              clearInterval(timer);
+              timer = null;
+            }
+            startBtn.disabled = false;
+            startBtn.textContent = cfg.startLabel;
+          }
+        } catch (err) {
+          errorEl.textContent = `Status error: ${err.message}`;
+        }
+      }
+
+      async function sendControl(action) {
+        if (!jobId) return;
+        try {
+          const body = new URLSearchParams({ action });
+          const res = await fetch(`/api/jobs/${jobId}/control`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: body.toString(),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          render(data.job);
+        } catch (err) {
+          errorEl.textContent = `Control error: ${err.message}`;
+        }
+      }
+
+      pauseBtn.addEventListener("click", () => sendControl("pause"));
+      resumeBtn.addEventListener("click", () => sendControl("resume"));
+      stopBtn.addEventListener("click", () => sendControl("stop"));
+      rowsEl.addEventListener("click", (e) => {
+        const btn = e.target.closest(".remove-file");
+        if (!btn) return;
+        const file = btn.getAttribute("data-file");
+        if (file) removeFile(file);
+      });
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        panel.classList.remove("hidden");
+        errorEl.textContent = "";
+        rowsEl.innerHTML = "";
+
+        startBtn.disabled = true;
+        startBtn.textContent = "Starting...";
+
+        if (timer) {
+          clearInterval(timer);
+          timer = null;
+        }
+
+        try {
+          const formData = new FormData(form);
+          const res = await fetch(cfg.startApi, {
+            method: "POST",
+            body: formData,
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+          jobId = data.job_id;
+          jobIdEl.textContent = `Job: ${jobId}`;
+          startBtn.textContent = "Running...";
+          await poll();
+          timer = setInterval(poll, 1500);
+        } catch (err) {
+          startBtn.disabled = false;
+          startBtn.textContent = cfg.startLabel;
+          errorEl.textContent = `Start error: ${err.message}`;
+        }
+      });
+
+      setButtons("completed");
+    }
+
+    bindSection({
+      prefix: "drive",
+      formId: "driveForm",
+      startApi: "/api/upload/drive/start",
+      startLabel: "Upload Drive Files",
+    });
+
+    bindSection({
+      prefix: "images",
+      formId: "imagesForm",
+      startApi: "/api/upload/images/start",
+      startLabel: "Upload Images",
+    });
+
+    bindSection({
+      prefix: "videos",
+      formId: "videosForm",
+      startApi: "/api/upload/videos/start",
+      startLabel: "Upload Videos",
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+drive_videos/
+preview.png
+*.part
+upload_results.jsonl
+__pycache__/
+*.pyc
