@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -43,7 +44,7 @@ APP_VERSION = (
 APP_BOOT_UTC = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
 
 JOB_DIR = Path("/tmp/fb_media_jobs")
-TERMINAL_STATUSES = {"completed", "failed", "stopped"}
+TERMINAL_STATUSES = {"completed", "completed_with_errors", "failed", "stopped"}
 
 
 class StopRequested(Exception):
@@ -199,6 +200,47 @@ def normalize_account_id(account_id: str) -> str:
     return account_id if account_id.startswith("act_") else f"act_{account_id}"
 
 
+def format_graph_error(status_code: int, body):
+    if not isinstance(body, dict):
+        return f"HTTP {status_code}: {body}"
+
+    err = body.get("error") if isinstance(body.get("error"), dict) else None
+    if not err:
+        return f"HTTP {status_code}: {body}"
+
+    message = str(err.get("message") or "Unknown Facebook API error.").strip()
+    err_type = str(err.get("type") or "UnknownError").strip()
+    code = err.get("code")
+    subcode = err.get("error_subcode")
+
+    # Common OAuth expiry/invalid-token cases.
+    if str(code) == "190" or err_type == "OAuthException":
+        expired_on = None
+        current_time = None
+        m_exp = re.search(r"expired on\s+(.+?)\.\s+The current time", message, flags=re.IGNORECASE)
+        m_now = re.search(r"The current time\s+is\s+(.+?)\.", message, flags=re.IGNORECASE)
+        if m_exp:
+            expired_on = m_exp.group(1).strip()
+        if m_now:
+            current_time = m_now.group(1).strip()
+
+        parts = ["Facebook access token expired or invalid."]
+        if expired_on:
+            parts.append(f"Expired on {expired_on}.")
+        if current_time:
+            parts.append(f"Facebook server time was {current_time}.")
+        parts.append("Paste a fresh token with ads_management permission and retry.")
+        return " ".join(parts)
+
+    extra = []
+    if code is not None:
+        extra.append(f"code {code}")
+    if subcode is not None:
+        extra.append(f"subcode {subcode}")
+    extra_label = f" ({', '.join(extra)})" if extra else ""
+    return f"Facebook API error{extra_label}: {message}"
+
+
 def fb_post(account_id: str, token: str, data: Dict, files=None, timeout=300):
     url = f"https://graph.facebook.com/{API_VERSION}/{account_id}/advideos"
     payload = dict(data)
@@ -210,7 +252,7 @@ def fb_post(account_id: str, token: str, data: Dict, files=None, timeout=300):
         body = {"raw": resp.text}
 
     if resp.status_code >= 400 or "error" in body:
-        raise RuntimeError(f"HTTP {resp.status_code}: {body}")
+        raise RuntimeError(format_graph_error(resp.status_code, body))
     return body
 
 
@@ -224,7 +266,7 @@ def graph_get(path: str, token: str, params: Dict = None, timeout=120):
     except Exception:
         body = {"raw": resp.text}
     if resp.status_code >= 400 or "error" in body:
-        raise RuntimeError(f"HTTP {resp.status_code}: {body}")
+        raise RuntimeError(format_graph_error(resp.status_code, body))
     return body
 
 
@@ -238,7 +280,7 @@ def graph_post(path: str, token: str, data: Dict = None, files=None, timeout=300
     except Exception:
         body = {"raw": resp.text}
     if resp.status_code >= 400 or "error" in body:
-        raise RuntimeError(f"HTTP {resp.status_code}: {body}")
+        raise RuntimeError(format_graph_error(resp.status_code, body))
     return body
 
 
@@ -257,10 +299,19 @@ def graph_list_all(path: str, token: str, params: Dict = None, max_pages: int = 
         except Exception:
             body = {"raw": resp.text}
         if resp.status_code >= 400 or "error" in body:
-            raise RuntimeError(f"HTTP {resp.status_code}: {body}")
+            raise RuntimeError(format_graph_error(resp.status_code, body))
         data.extend(body.get("data", []))
         url = body.get("paging", {}).get("next")
     return data
+
+
+def validate_token_and_account_access(account_id: str, token: str):
+    account = graph_get(account_id, token, params={"fields": "id,name,account_status"})
+    return {
+        "id": account.get("id"),
+        "name": account.get("name", ""),
+        "account_status": account.get("account_status"),
+    }
 
 
 def _find_by_name_or_id(items: List[Dict], ref: str):
@@ -502,7 +553,7 @@ def upload_image(account_id: str, token: str, file_path: Path):
         body = {"raw": resp.text}
 
     if resp.status_code >= 400 or "error" in body:
-        raise RuntimeError(f"HTTP {resp.status_code}: {body}")
+        raise RuntimeError(format_graph_error(resp.status_code, body))
 
     image_hash = None
     images = body.get("images")
@@ -620,6 +671,11 @@ def init_job(mode: str, form_values: Dict, items: List[Dict] = None):
     }
     save_job(job_id, payload)
     return job_id
+
+
+def has_failed_items(job_id: str) -> bool:
+    payload = load_job(job_id) or {}
+    return any(item.get("status") == "failed" for item in payload.get("items", []))
 
 
 def finalize_job(job_id: str, status: str, ok: bool, step: str, error: str = None):
@@ -774,7 +830,16 @@ def process_drive_upload_job(job_id: str, account_id: str, token: str, drive_lin
                     set_step(job_id, f"Failed file: {file_name}")
                     continue
 
-        finalize_job(job_id, status="completed", ok=True, step="Completed")
+        if has_failed_items(job_id):
+            finalize_job(
+                job_id,
+                status="completed_with_errors",
+                ok=False,
+                step="Completed with errors",
+                error="One or more files failed. Check row-level errors.",
+            )
+        else:
+            finalize_job(job_id, status="completed", ok=True, step="Completed")
     except StopRequested:
         # status already set by control checkpoint
         pass
@@ -852,7 +917,16 @@ def process_images_upload_job(job_id: str, account_id: str, token: str, destinat
                 set_step(job_id, f"Failed file: {name}")
                 continue
 
-        finalize_job(job_id, status="completed", ok=True, step="Completed")
+        if has_failed_items(job_id):
+            finalize_job(
+                job_id,
+                status="completed_with_errors",
+                ok=False,
+                step="Completed with errors",
+                error="One or more files failed. Check row-level errors.",
+            )
+        else:
+            finalize_job(job_id, status="completed", ok=True, step="Completed")
     except StopRequested:
         pass
     except Exception as exc:
@@ -959,7 +1033,16 @@ def process_videos_upload_job(job_id: str, account_id: str, token: str, destinat
                 set_step(job_id, f"Failed file: {name}")
                 continue
 
-        finalize_job(job_id, status="completed", ok=True, step="Completed")
+        if has_failed_items(job_id):
+            finalize_job(
+                job_id,
+                status="completed_with_errors",
+                ok=False,
+                step="Completed with errors",
+                error="One or more files failed. Check row-level errors.",
+            )
+        else:
+            finalize_job(job_id, status="completed", ok=True, step="Completed")
     except StopRequested:
         pass
     except Exception as exc:
@@ -1011,6 +1094,8 @@ def start_drive_job(values):
     if not (values["account_id"] and values["token"] and values["drive_link"]):
         raise ValueError("Please provide Google Drive link, ad account ID, and access token.")
 
+    validate_token_and_account_access(values["account_id"], values["token"])
+
     destination = build_destination_config(values)
     if destination.get("enabled"):
         destination["resolved"] = resolve_destination(
@@ -1048,6 +1133,8 @@ def start_images_job(values, req_files):
     if not (values["account_id"] and values["token"]):
         raise ValueError("Please provide ad account ID and access token.")
 
+    validate_token_and_account_access(values["account_id"], values["token"])
+
     destination = build_destination_config(values)
     if destination.get("enabled"):
         destination["resolved"] = resolve_destination(
@@ -1079,6 +1166,8 @@ def start_images_job(values, req_files):
 def start_videos_job(values, req_files):
     if not (values["account_id"] and values["token"]):
         raise ValueError("Please provide ad account ID and access token.")
+
+    validate_token_and_account_access(values["account_id"], values["token"])
 
     destination = build_destination_config(values)
     if destination.get("enabled"):
@@ -1240,6 +1329,23 @@ def api_start_videos():
             "poll_url": url_for("api_job_status", job_id=job_id),
         }
     )
+
+
+@app.route("/api/token/validate", methods=["POST"])
+def api_validate_token():
+    ad_account_input = request.form.get("ad_account_id", "").strip() or DEFAULT_AD_ACCOUNT_ID
+    token = request.form.get("access_token", "").strip() or DEFAULT_ACCESS_TOKEN
+    account_id = normalize_account_id(ad_account_input)
+
+    if not account_id or not token:
+        return jsonify({"ok": False, "error": "Please provide ad account ID and access token."}), 400
+
+    try:
+        account = validate_token_and_account_access(account_id, token)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    return jsonify({"ok": True, "account_id": account_id, "account": account})
 
 
 @app.route("/api/jobs/<job_id>", methods=["GET"])

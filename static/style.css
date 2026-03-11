@@ -111,6 +111,11 @@ td {
   font-weight: 700;
 }
 
+.completed_with_errors {
+  color: #9a6700;
+  font-weight: 700;
+}
+
 .error {
   color: var(--bad);
   font-weight: 700;

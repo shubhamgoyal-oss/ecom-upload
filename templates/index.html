@@ -306,7 +306,7 @@
       let timer = null;
 
       function setButtons(status) {
-        const terminal = ["completed", "failed", "stopped"].includes(status);
+        const terminal = ["completed", "completed_with_errors", "failed", "stopped"].includes(status);
         const paused = status === "paused";
         const stopping = status === "stopping";
 
@@ -385,7 +385,7 @@
           const job = data.job;
           render(job);
 
-          if (["completed", "failed", "stopped"].includes(job.status)) {
+          if (["completed", "completed_with_errors", "failed", "stopped"].includes(job.status)) {
             if (timer) {
               clearInterval(timer);
               timer = null;
@@ -441,6 +441,24 @@
 
         try {
           const formData = new FormData(form);
+          const authData = new URLSearchParams({
+            ad_account_id: safeText(formData.get("ad_account_id")),
+            access_token: safeText(formData.get("access_token")),
+          });
+
+          startBtn.textContent = "Validating Token...";
+          const checkRes = await fetch("/api/token/validate", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: authData.toString(),
+          });
+          const checkData = await checkRes.json();
+          if (!checkRes.ok || !checkData.ok) throw new Error(checkData.error || `HTTP ${checkRes.status}`);
+
+          const acct = checkData.account || {};
+          stepEl.textContent = `Token OK for ${safeText(acct.name || acct.id || checkData.account_id)}`;
+
+          startBtn.textContent = "Starting...";
           const res = await fetch(cfg.startApi, {
             method: "POST",
             body: formData,
