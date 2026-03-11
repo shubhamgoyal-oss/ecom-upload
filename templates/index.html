@@ -24,6 +24,35 @@
         <label>Access Token</label>
         <input name="access_token" type="text" value="{{ defaults['access_token'] }}" required>
 
+        <details class="advanced">
+          <summary>Attach Uploaded Assets To Campaign/Ad Set (Optional)</summary>
+          <label>Campaign Name or ID</label>
+          <input name="campaign_ref" type="text" value="{{ defaults['campaign_ref'] }}" placeholder="Optional campaign name or ID">
+
+          <label>Ad Set Name or ID</label>
+          <input name="adset_ref" type="text" value="{{ defaults['adset_ref'] }}" placeholder="Required if attaching directly">
+
+          <label class="checkbox-row">
+            <input name="attach_to_adset" type="checkbox" {% if defaults['attach_to_adset'] %}checked{% endif %}>
+            Attach directly to ad set (creates paused ads automatically)
+          </label>
+
+          <label>Facebook Page ID</label>
+          <input name="page_id" type="text" value="{{ defaults['page_id'] }}" placeholder="Required for direct attach">
+
+          <label>Destination URL</label>
+          <input name="destination_url" type="url" value="{{ defaults['destination_url'] }}" placeholder="https://... (required for direct attach)">
+
+          <label>Primary Text</label>
+          <input name="primary_text" type="text" value="{{ defaults['primary_text'] }}" placeholder="Optional ad primary text">
+
+          <label>Headline</label>
+          <input name="headline" type="text" value="{{ defaults['headline'] }}" placeholder="Optional ad headline">
+
+          <label>CTA Type</label>
+          <input name="cta_type" type="text" value="{{ defaults['cta_type'] }}" placeholder="LEARN_MORE">
+        </details>
+
         <button id="driveStartBtn" type="submit">Upload Drive Files</button>
       </form>
 
@@ -75,6 +104,35 @@
 
         <label>Access Token</label>
         <input name="access_token" type="text" value="{{ defaults['access_token'] }}" required>
+
+        <details class="advanced">
+          <summary>Attach Uploaded Assets To Campaign/Ad Set (Optional)</summary>
+          <label>Campaign Name or ID</label>
+          <input name="campaign_ref" type="text" value="{{ defaults['campaign_ref'] }}" placeholder="Optional campaign name or ID">
+
+          <label>Ad Set Name or ID</label>
+          <input name="adset_ref" type="text" value="{{ defaults['adset_ref'] }}" placeholder="Required if attaching directly">
+
+          <label class="checkbox-row">
+            <input name="attach_to_adset" type="checkbox" {% if defaults['attach_to_adset'] %}checked{% endif %}>
+            Attach directly to ad set (creates paused ads automatically)
+          </label>
+
+          <label>Facebook Page ID</label>
+          <input name="page_id" type="text" value="{{ defaults['page_id'] }}" placeholder="Required for direct attach">
+
+          <label>Destination URL</label>
+          <input name="destination_url" type="url" value="{{ defaults['destination_url'] }}" placeholder="https://... (required for direct attach)">
+
+          <label>Primary Text</label>
+          <input name="primary_text" type="text" value="{{ defaults['primary_text'] }}" placeholder="Optional ad primary text">
+
+          <label>Headline</label>
+          <input name="headline" type="text" value="{{ defaults['headline'] }}" placeholder="Optional ad headline">
+
+          <label>CTA Type</label>
+          <input name="cta_type" type="text" value="{{ defaults['cta_type'] }}" placeholder="LEARN_MORE">
+        </details>
 
         <label>Select Images (multiple)</label>
         <input name="images" type="file" accept="image/*" multiple required>
@@ -130,6 +188,35 @@
 
         <label>Access Token</label>
         <input name="access_token" type="text" value="{{ defaults['access_token'] }}" required>
+
+        <details class="advanced">
+          <summary>Attach Uploaded Assets To Campaign/Ad Set (Optional)</summary>
+          <label>Campaign Name or ID</label>
+          <input name="campaign_ref" type="text" value="{{ defaults['campaign_ref'] }}" placeholder="Optional campaign name or ID">
+
+          <label>Ad Set Name or ID</label>
+          <input name="adset_ref" type="text" value="{{ defaults['adset_ref'] }}" placeholder="Required if attaching directly">
+
+          <label class="checkbox-row">
+            <input name="attach_to_adset" type="checkbox" {% if defaults['attach_to_adset'] %}checked{% endif %}>
+            Attach directly to ad set (creates paused ads automatically)
+          </label>
+
+          <label>Facebook Page ID</label>
+          <input name="page_id" type="text" value="{{ defaults['page_id'] }}" placeholder="Required for direct attach">
+
+          <label>Destination URL</label>
+          <input name="destination_url" type="url" value="{{ defaults['destination_url'] }}" placeholder="https://... (required for direct attach)">
+
+          <label>Primary Text</label>
+          <input name="primary_text" type="text" value="{{ defaults['primary_text'] }}" placeholder="Optional ad primary text">
+
+          <label>Headline</label>
+          <input name="headline" type="text" value="{{ defaults['headline'] }}" placeholder="Optional ad headline">
+
+          <label>CTA Type</label>
+          <input name="cta_type" type="text" value="{{ defaults['cta_type'] }}" placeholder="LEARN_MORE">
+        </details>
 
         <label>Select Videos (multiple)</label>
         <input name="videos" type="file" accept="video/*" multiple required>
@@ -251,11 +338,11 @@
         (items || []).forEach((item) => {
           const tr = document.createElement("tr");
           const details = item.details || {};
-          const extra = item.error || details.video_id || details.image_hash || "-";
-          const removable = [\"queued\", \"downloading\", \"uploading\"].includes(item.status || \"\");
+          const extra = item.error || details.ad_id || (details.attached && details.attached.ad_id) || details.video_id || details.image_hash || "-";
+          const removable = ["queued", "downloading", "uploading"].includes(item.status || "");
           const actionBtn = removable
-            ? `<button type=\"button\" class=\"small-btn remove-file\" data-file=\"${safeText(item.file)}\">Remove</button>`
-            : \"-\";
+            ? `<button type="button" class="small-btn remove-file" data-file="${safeText(item.file)}">Remove</button>`
+            : "-";
           tr.innerHTML = `
             <td>${safeText(item.file)}</td>
             <td class="${safeText(item.status)}">${safeText(item.status || "-")}</td>

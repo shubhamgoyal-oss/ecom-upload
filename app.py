@@ -27,6 +27,13 @@ DEFAULT_ACCESS_TOKEN = os.environ.get(
     "DEFAULT_ACCESS_TOKEN",
     "***REMOVED***",
 )
+DEFAULT_CAMPAIGN_REF = os.environ.get("DEFAULT_CAMPAIGN_REF", "")
+DEFAULT_ADSET_REF = os.environ.get("DEFAULT_ADSET_REF", "")
+DEFAULT_PAGE_ID = os.environ.get("DEFAULT_PAGE_ID", "")
+DEFAULT_DESTINATION_URL = os.environ.get("DEFAULT_DESTINATION_URL", "")
+DEFAULT_PRIMARY_TEXT = os.environ.get("DEFAULT_PRIMARY_TEXT", "")
+DEFAULT_HEADLINE = os.environ.get("DEFAULT_HEADLINE", "")
+DEFAULT_CTA_TYPE = os.environ.get("DEFAULT_CTA_TYPE", "LEARN_MORE")
 APP_VERSION = (
     os.environ.get("APP_VERSION")
     or os.environ.get("RAILWAY_GIT_COMMIT_SHA")
@@ -165,6 +172,14 @@ def render_page(result=None, form_values=None):
         "drive_link": DEFAULT_DRIVE_LINK,
         "ad_account_id": DEFAULT_AD_ACCOUNT_ID,
         "access_token": DEFAULT_ACCESS_TOKEN,
+        "campaign_ref": DEFAULT_CAMPAIGN_REF,
+        "adset_ref": DEFAULT_ADSET_REF,
+        "page_id": DEFAULT_PAGE_ID,
+        "destination_url": DEFAULT_DESTINATION_URL,
+        "primary_text": DEFAULT_PRIMARY_TEXT,
+        "headline": DEFAULT_HEADLINE,
+        "cta_type": DEFAULT_CTA_TYPE,
+        "attach_to_adset": False,
     }
     if form_values:
         for key, value in form_values.items():
@@ -197,6 +212,219 @@ def fb_post(account_id: str, token: str, data: Dict, files=None, timeout=300):
     if resp.status_code >= 400 or "error" in body:
         raise RuntimeError(f"HTTP {resp.status_code}: {body}")
     return body
+
+
+def graph_get(path: str, token: str, params: Dict = None, timeout=120):
+    url = f"https://graph.facebook.com/{API_VERSION}/{path.lstrip('/')}"
+    query = dict(params or {})
+    query["access_token"] = token
+    resp = requests.get(url, params=query, timeout=timeout)
+    try:
+        body = resp.json() if resp.text else {}
+    except Exception:
+        body = {"raw": resp.text}
+    if resp.status_code >= 400 or "error" in body:
+        raise RuntimeError(f"HTTP {resp.status_code}: {body}")
+    return body
+
+
+def graph_post(path: str, token: str, data: Dict = None, files=None, timeout=300):
+    url = f"https://graph.facebook.com/{API_VERSION}/{path.lstrip('/')}"
+    payload = dict(data or {})
+    payload["access_token"] = token
+    resp = requests.post(url, data=payload, files=files, timeout=timeout)
+    try:
+        body = resp.json() if resp.text else {}
+    except Exception:
+        body = {"raw": resp.text}
+    if resp.status_code >= 400 or "error" in body:
+        raise RuntimeError(f"HTTP {resp.status_code}: {body}")
+    return body
+
+
+def graph_list_all(path: str, token: str, params: Dict = None, max_pages: int = 10):
+    data = []
+    query = dict(params or {})
+    query["access_token"] = token
+    url = f"https://graph.facebook.com/{API_VERSION}/{path.lstrip('/')}"
+    pages = 0
+
+    while url and pages < max_pages:
+        pages += 1
+        resp = requests.get(url, params=query if pages == 1 else None, timeout=120)
+        try:
+            body = resp.json() if resp.text else {}
+        except Exception:
+            body = {"raw": resp.text}
+        if resp.status_code >= 400 or "error" in body:
+            raise RuntimeError(f"HTTP {resp.status_code}: {body}")
+        data.extend(body.get("data", []))
+        url = body.get("paging", {}).get("next")
+    return data
+
+
+def _find_by_name_or_id(items: List[Dict], ref: str):
+    if not ref:
+        return None
+    ref_clean = ref.strip()
+    if not ref_clean:
+        return None
+
+    if ref_clean.isdigit():
+        for x in items:
+            if str(x.get("id")) == ref_clean:
+                return x
+
+    exact = [x for x in items if str(x.get("name", "")).strip().lower() == ref_clean.lower()]
+    if exact:
+        return exact[0]
+    contains = [x for x in items if ref_clean.lower() in str(x.get("name", "")).lower()]
+    if contains:
+        return contains[0]
+    return None
+
+
+def resolve_destination(account_id: str, token: str, campaign_ref: str, adset_ref: str):
+    resolved = {"campaign": None, "adset": None}
+
+    if campaign_ref:
+        campaigns = graph_list_all(f"{account_id}/campaigns", token, params={"fields": "id,name", "limit": 200})
+        campaign = _find_by_name_or_id(campaigns, campaign_ref)
+        if not campaign:
+            raise RuntimeError(f"Campaign not found: {campaign_ref}")
+        resolved["campaign"] = {"id": str(campaign["id"]), "name": campaign.get("name", "")}
+
+    if adset_ref:
+        adsets = graph_list_all(
+            f"{account_id}/adsets",
+            token,
+            params={"fields": "id,name,campaign_id", "limit": 200},
+        )
+        adset = _find_by_name_or_id(adsets, adset_ref)
+        if not adset:
+            raise RuntimeError(f"Ad set not found: {adset_ref}")
+        resolved["adset"] = {
+            "id": str(adset["id"]),
+            "name": adset.get("name", ""),
+            "campaign_id": str(adset.get("campaign_id", "")),
+        }
+
+    campaign = resolved.get("campaign")
+    adset = resolved.get("adset")
+    if campaign and adset and adset.get("campaign_id") and adset["campaign_id"] != campaign["id"]:
+        raise RuntimeError(
+            f"Ad set {adset['name']} ({adset['id']}) does not belong to campaign {campaign['name']} ({campaign['id']})."
+        )
+    return resolved
+
+
+def build_destination_config(values: Dict):
+    attach = values.get("attach_to_adset", False)
+    if not attach:
+        return {"enabled": False}
+
+    if not values.get("adset_ref"):
+        raise RuntimeError("Ad set is required when 'Attach directly to ad set' is enabled.")
+    if not values.get("page_id"):
+        raise RuntimeError("Page ID is required when attaching directly to an ad set.")
+    if not values.get("destination_url"):
+        raise RuntimeError("Destination URL is required when attaching directly to an ad set.")
+
+    return {
+        "enabled": True,
+        "campaign_ref": values.get("campaign_ref", ""),
+        "adset_ref": values.get("adset_ref", ""),
+        "page_id": values.get("page_id", ""),
+        "destination_url": values.get("destination_url", ""),
+        "primary_text": values.get("primary_text", ""),
+        "headline": values.get("headline", ""),
+        "cta_type": values.get("cta_type", DEFAULT_CTA_TYPE),
+        "resolved": None,
+    }
+
+
+def maybe_attach_asset_to_adset(
+    account_id: str,
+    token: str,
+    destination: Dict,
+    asset_type: str,
+    asset_ref: str,
+    file_name: str,
+):
+    if not destination or not destination.get("enabled"):
+        return None
+
+    resolved = destination.get("resolved") or {}
+    adset = resolved.get("adset")
+    if not adset:
+        raise RuntimeError("Destination ad set is not resolved.")
+
+    page_id = destination.get("page_id", "")
+    destination_url = destination.get("destination_url", "")
+    primary_text = destination.get("primary_text", "") or ""
+    headline = destination.get("headline", "") or ""
+    cta_type = destination.get("cta_type", "LEARN_MORE")
+
+    creative_name = f"Auto {asset_type} | {file_name} | {int(time.time())}"
+    if asset_type == "image":
+        creative = graph_post(
+            f"{account_id}/adcreatives",
+            token,
+            data={
+                "name": creative_name,
+                "object_story_spec": json.dumps(
+                    {
+                        "page_id": page_id,
+                        "link_data": {
+                            "image_hash": asset_ref,
+                            "link": destination_url,
+                            "message": primary_text,
+                            "name": headline,
+                        },
+                    }
+                ),
+            },
+        )
+    else:
+        creative = graph_post(
+            f"{account_id}/adcreatives",
+            token,
+            data={
+                "name": creative_name,
+                "object_story_spec": json.dumps(
+                    {
+                        "page_id": page_id,
+                        "video_data": {
+                            "video_id": asset_ref,
+                            "message": primary_text,
+                            "title": headline,
+                            "call_to_action": {
+                                "type": cta_type,
+                                "value": {"link": destination_url},
+                            },
+                        },
+                    }
+                ),
+            },
+        )
+
+    ad_name = f"Auto Ad | {file_name} | {int(time.time())}"
+    ad = graph_post(
+        f"{account_id}/ads",
+        token,
+        data={
+            "name": ad_name,
+            "adset_id": adset["id"],
+            "creative": json.dumps({"creative_id": creative["id"]}),
+            "status": "PAUSED",
+        },
+    )
+
+    return {
+        "creative_id": creative.get("id"),
+        "ad_id": ad.get("id"),
+        "adset_id": adset.get("id"),
+    }
 
 
 def upload_video_resumable(account_id: str, token: str, file_path: Path, progress_cb=None, checkpoint_cb=None):
@@ -418,7 +646,7 @@ def finalize_job(job_id: str, status: str, ok: bool, step: str, error: str = Non
     save_job(job_id, payload)
 
 
-def process_drive_upload_job(job_id: str, account_id: str, token: str, drive_link: str):
+def process_drive_upload_job(job_id: str, account_id: str, token: str, drive_link: str, destination: Dict):
     try:
         control_checkpoint(job_id)
         update_job(job_id, status="running", overall_percent=1)
@@ -460,66 +688,91 @@ def process_drive_upload_job(job_id: str, account_id: str, token: str, drive_lin
                     set_step(job_id, f"Skipped removed file: {file_name}")
                     continue
 
-                update_job(job_id, current_file=file_name, current_index=index)
-                set_step(job_id, f"Downloading {file_name} ({index}/{total_files})")
-                update_item(job_id, file_name, status="downloading", percent=5)
+                try:
+                    update_job(job_id, current_file=file_name, current_index=index)
+                    set_step(job_id, f"Downloading {file_name} ({index}/{total_files})")
+                    update_item(job_id, file_name, status="downloading", percent=5)
 
-                local_out = tmp_dir / secure_filename(file_name or f"file_{index}")
-                downloaded_path = gdown.download(
-                    id=file_id,
-                    output=str(local_out),
-                    quiet=True,
-                    use_cookies=False,
-                    resume=True,
-                )
-                if not downloaded_path:
-                    raise RuntimeError(f"Download failed for {file_name}")
-                file_path = Path(downloaded_path)
+                    local_out = tmp_dir / secure_filename(file_name or f"file_{index}")
+                    downloaded_path = gdown.download(
+                        id=file_id,
+                        output=str(local_out),
+                        quiet=True,
+                        use_cookies=False,
+                        resume=True,
+                    )
+                    if not downloaded_path:
+                        raise RuntimeError(f"Download failed for {file_name}")
+                    file_path = Path(downloaded_path)
 
-                control_checkpoint(job_id)
-                set_step(job_id, f"Uploading {file_name} ({index}/{total_files})")
-                update_item(job_id, file_name, status="uploading", percent=20)
-
-                last_emit = {"ts": 0.0}
-
-                def on_progress(sent_bytes: int, total_bytes: int):
                     control_checkpoint(job_id)
-                    now = time.time()
-                    if now - last_emit["ts"] < 0.6 and sent_bytes < total_bytes:
-                        return
-                    last_emit["ts"] = now
+                    set_step(job_id, f"Uploading {file_name} ({index}/{total_files})")
+                    update_item(job_id, file_name, status="uploading", percent=20)
 
-                    file_pct = 20 + int((sent_bytes / max(total_bytes, 1)) * 80)
-                    file_pct = min(99, max(20, file_pct))
-                    overall = int((((index - 1) + (file_pct / 100.0)) / max(total_files, 1)) * 100)
-                    overall = min(99, max(1, overall))
-                    eta = compute_eta_seconds(started_at, overall)
+                    last_emit = {"ts": 0.0}
 
-                    update_item(job_id, file_name, status="uploading", percent=file_pct)
+                    def on_progress(sent_bytes: int, total_bytes: int):
+                        control_checkpoint(job_id)
+                        now = time.time()
+                        if now - last_emit["ts"] < 0.6 and sent_bytes < total_bytes:
+                            return
+                        last_emit["ts"] = now
+
+                        file_pct = 20 + int((sent_bytes / max(total_bytes, 1)) * 80)
+                        file_pct = min(99, max(20, file_pct))
+                        overall = int((((index - 1) + (file_pct / 100.0)) / max(total_files, 1)) * 100)
+                        overall = min(99, max(1, overall))
+                        eta = compute_eta_seconds(started_at, overall)
+
+                        update_item(job_id, file_name, status="uploading", percent=file_pct)
+                        update_job(
+                            job_id,
+                            overall_percent=overall,
+                            current_file=file_name,
+                            current_file_percent=file_pct,
+                            eta_seconds=eta,
+                        )
+
+                    uploaded = upload_video_resumable(
+                        account_id,
+                        token,
+                        file_path,
+                        progress_cb=on_progress,
+                        checkpoint_cb=lambda: control_checkpoint(job_id),
+                    )
+                    if destination.get("enabled") and uploaded.get("video_id"):
+                        attach = maybe_attach_asset_to_adset(
+                            account_id=account_id,
+                            token=token,
+                            destination=destination,
+                            asset_type="video",
+                            asset_ref=uploaded["video_id"],
+                            file_name=file_name,
+                        )
+                        if attach:
+                            uploaded["attached"] = attach
+                    update_item(job_id, file_name, status="uploaded", percent=100, details=uploaded)
+
+                    overall = int((index / max(total_files, 1)) * 100)
                     update_job(
                         job_id,
                         overall_percent=overall,
-                        current_file=file_name,
-                        current_file_percent=file_pct,
-                        eta_seconds=eta,
+                        current_file_percent=100,
+                        eta_seconds=compute_eta_seconds(started_at, overall),
                     )
-
-                uploaded = upload_video_resumable(
-                    account_id,
-                    token,
-                    file_path,
-                    progress_cb=on_progress,
-                    checkpoint_cb=lambda: control_checkpoint(job_id),
-                )
-                update_item(job_id, file_name, status="uploaded", percent=100, details=uploaded)
-
-                overall = int((index / max(total_files, 1)) * 100)
-                update_job(
-                    job_id,
-                    overall_percent=overall,
-                    current_file_percent=100,
-                    eta_seconds=compute_eta_seconds(started_at, overall),
-                )
+                except StopRequested:
+                    raise
+                except Exception as exc:
+                    update_item(job_id, file_name, status="failed", percent=100, error=str(exc))
+                    overall = int((index / max(total_files, 1)) * 100)
+                    update_job(
+                        job_id,
+                        overall_percent=overall,
+                        current_file_percent=100,
+                        eta_seconds=compute_eta_seconds(started_at, overall),
+                    )
+                    set_step(job_id, f"Failed file: {file_name}")
+                    continue
 
         finalize_job(job_id, status="completed", ok=True, step="Completed")
     except StopRequested:
@@ -529,7 +782,7 @@ def process_drive_upload_job(job_id: str, account_id: str, token: str, drive_lin
         finalize_job(job_id, status="failed", ok=False, step="Failed", error=str(exc))
 
 
-def process_images_upload_job(job_id: str, account_id: str, token: str):
+def process_images_upload_job(job_id: str, account_id: str, token: str, destination: Dict):
     try:
         control_checkpoint(job_id)
         payload = load_job(job_id) or {}
@@ -559,20 +812,45 @@ def process_images_upload_job(job_id: str, account_id: str, token: str):
                 set_step(job_id, f"Skipped removed file: {name}")
                 continue
 
-            update_job(job_id, current_file=name, current_file_percent=10)
-            set_step(job_id, f"Uploading {name} ({index}/{total})")
-            update_item(job_id, name, status="uploading", percent=10)
+            try:
+                update_job(job_id, current_file=name, current_file_percent=10)
+                set_step(job_id, f"Uploading {name} ({index}/{total})")
+                update_item(job_id, name, status="uploading", percent=10)
 
-            uploaded = upload_image(account_id, token, path)
-            update_item(job_id, name, status="uploaded", percent=100, details=uploaded)
+                uploaded = upload_image(account_id, token, path)
+                if destination.get("enabled") and uploaded.get("image_hash"):
+                    attach = maybe_attach_asset_to_adset(
+                        account_id=account_id,
+                        token=token,
+                        destination=destination,
+                        asset_type="image",
+                        asset_ref=uploaded["image_hash"],
+                        file_name=name,
+                    )
+                    if attach:
+                        uploaded["attached"] = attach
+                update_item(job_id, name, status="uploaded", percent=100, details=uploaded)
 
-            overall = int((index / total) * 100)
-            update_job(
-                job_id,
-                overall_percent=overall,
-                current_file_percent=100,
-                eta_seconds=compute_eta_seconds(started_at, overall),
-            )
+                overall = int((index / total) * 100)
+                update_job(
+                    job_id,
+                    overall_percent=overall,
+                    current_file_percent=100,
+                    eta_seconds=compute_eta_seconds(started_at, overall),
+                )
+            except StopRequested:
+                raise
+            except Exception as exc:
+                update_item(job_id, name, status="failed", percent=100, error=str(exc))
+                overall = int((index / total) * 100)
+                update_job(
+                    job_id,
+                    overall_percent=overall,
+                    current_file_percent=100,
+                    eta_seconds=compute_eta_seconds(started_at, overall),
+                )
+                set_step(job_id, f"Failed file: {name}")
+                continue
 
         finalize_job(job_id, status="completed", ok=True, step="Completed")
     except StopRequested:
@@ -581,7 +859,7 @@ def process_images_upload_job(job_id: str, account_id: str, token: str):
         finalize_job(job_id, status="failed", ok=False, step="Failed", error=str(exc))
 
 
-def process_videos_upload_job(job_id: str, account_id: str, token: str):
+def process_videos_upload_job(job_id: str, account_id: str, token: str, destination: Dict):
     try:
         control_checkpoint(job_id)
         payload = load_job(job_id) or {}
@@ -611,50 +889,75 @@ def process_videos_upload_job(job_id: str, account_id: str, token: str):
                 set_step(job_id, f"Skipped removed file: {name}")
                 continue
 
-            update_job(job_id, current_file=name)
-            set_step(job_id, f"Uploading {name} ({index}/{total})")
-            update_item(job_id, name, status="uploading", percent=1)
+            try:
+                update_job(job_id, current_file=name)
+                set_step(job_id, f"Uploading {name} ({index}/{total})")
+                update_item(job_id, name, status="uploading", percent=1)
 
-            last_emit = {"ts": 0.0}
+                last_emit = {"ts": 0.0}
 
-            def on_progress(sent_bytes: int, total_bytes: int):
-                control_checkpoint(job_id)
-                now = time.time()
-                if now - last_emit["ts"] < 0.6 and sent_bytes < total_bytes:
-                    return
-                last_emit["ts"] = now
+                def on_progress(sent_bytes: int, total_bytes: int):
+                    control_checkpoint(job_id)
+                    now = time.time()
+                    if now - last_emit["ts"] < 0.6 and sent_bytes < total_bytes:
+                        return
+                    last_emit["ts"] = now
 
-                file_pct = int((sent_bytes / max(total_bytes, 1)) * 100)
-                file_pct = min(99, max(1, file_pct))
-                overall = int((((index - 1) + (file_pct / 100.0)) / max(total, 1)) * 100)
-                overall = min(99, max(1, overall))
-                eta = compute_eta_seconds(started_at, overall)
+                    file_pct = int((sent_bytes / max(total_bytes, 1)) * 100)
+                    file_pct = min(99, max(1, file_pct))
+                    overall = int((((index - 1) + (file_pct / 100.0)) / max(total, 1)) * 100)
+                    overall = min(99, max(1, overall))
+                    eta = compute_eta_seconds(started_at, overall)
 
-                update_item(job_id, name, status="uploading", percent=file_pct)
+                    update_item(job_id, name, status="uploading", percent=file_pct)
+                    update_job(
+                        job_id,
+                        overall_percent=overall,
+                        current_file=name,
+                        current_file_percent=file_pct,
+                        eta_seconds=eta,
+                    )
+
+                uploaded = upload_video_resumable(
+                    account_id,
+                    token,
+                    path,
+                    progress_cb=on_progress,
+                    checkpoint_cb=lambda: control_checkpoint(job_id),
+                )
+                if destination.get("enabled") and uploaded.get("video_id"):
+                    attach = maybe_attach_asset_to_adset(
+                        account_id=account_id,
+                        token=token,
+                        destination=destination,
+                        asset_type="video",
+                        asset_ref=uploaded["video_id"],
+                        file_name=name,
+                    )
+                    if attach:
+                        uploaded["attached"] = attach
+
+                update_item(job_id, name, status="uploaded", percent=100, details=uploaded)
+                overall = int((index / total) * 100)
                 update_job(
                     job_id,
                     overall_percent=overall,
-                    current_file=name,
-                    current_file_percent=file_pct,
-                    eta_seconds=eta,
+                    current_file_percent=100,
+                    eta_seconds=compute_eta_seconds(started_at, overall),
                 )
-
-            uploaded = upload_video_resumable(
-                account_id,
-                token,
-                path,
-                progress_cb=on_progress,
-                checkpoint_cb=lambda: control_checkpoint(job_id),
-            )
-
-            update_item(job_id, name, status="uploaded", percent=100, details=uploaded)
-            overall = int((index / total) * 100)
-            update_job(
-                job_id,
-                overall_percent=overall,
-                current_file_percent=100,
-                eta_seconds=compute_eta_seconds(started_at, overall),
-            )
+            except StopRequested:
+                raise
+            except Exception as exc:
+                update_item(job_id, name, status="failed", percent=100, error=str(exc))
+                overall = int((index / total) * 100)
+                update_job(
+                    job_id,
+                    overall_percent=overall,
+                    current_file_percent=100,
+                    eta_seconds=compute_eta_seconds(started_at, overall),
+                )
+                set_step(job_id, f"Failed file: {name}")
+                continue
 
         finalize_job(job_id, status="completed", ok=True, step="Completed")
     except StopRequested:
@@ -667,15 +970,39 @@ def parse_common_form_values(req):
     ad_account_input = req.form.get("ad_account_id", "").strip() or DEFAULT_AD_ACCOUNT_ID
     token = req.form.get("access_token", "").strip() or DEFAULT_ACCESS_TOKEN
     drive_link = req.form.get("drive_link", "").strip() or DEFAULT_DRIVE_LINK
+    campaign_ref = req.form.get("campaign_ref", "").strip() or DEFAULT_CAMPAIGN_REF
+    adset_ref = req.form.get("adset_ref", "").strip() or DEFAULT_ADSET_REF
+    page_id = req.form.get("page_id", "").strip() or DEFAULT_PAGE_ID
+    destination_url = req.form.get("destination_url", "").strip() or DEFAULT_DESTINATION_URL
+    primary_text = req.form.get("primary_text", "").strip() or DEFAULT_PRIMARY_TEXT
+    headline = req.form.get("headline", "").strip() or DEFAULT_HEADLINE
+    cta_type = req.form.get("cta_type", "").strip() or DEFAULT_CTA_TYPE
+    attach_to_adset = str(req.form.get("attach_to_adset", "")).lower() in {"on", "true", "1", "yes"}
     return {
         "ad_account_input": ad_account_input,
         "account_id": normalize_account_id(ad_account_input),
         "token": token,
         "drive_link": drive_link,
+        "campaign_ref": campaign_ref,
+        "adset_ref": adset_ref,
+        "page_id": page_id,
+        "destination_url": destination_url,
+        "primary_text": primary_text,
+        "headline": headline,
+        "cta_type": cta_type,
+        "attach_to_adset": attach_to_adset,
         "form_values": {
             "ad_account_id": ad_account_input,
             "access_token": token,
             "drive_link": drive_link,
+            "campaign_ref": campaign_ref,
+            "adset_ref": adset_ref,
+            "page_id": page_id,
+            "destination_url": destination_url,
+            "primary_text": primary_text,
+            "headline": headline,
+            "cta_type": cta_type,
+            "attach_to_adset": attach_to_adset,
         },
     }
 
@@ -684,10 +1011,20 @@ def start_drive_job(values):
     if not (values["account_id"] and values["token"] and values["drive_link"]):
         raise ValueError("Please provide Google Drive link, ad account ID, and access token.")
 
+    destination = build_destination_config(values)
+    if destination.get("enabled"):
+        destination["resolved"] = resolve_destination(
+            values["account_id"],
+            values["token"],
+            destination.get("campaign_ref"),
+            destination.get("adset_ref"),
+        )
+
     job_id = init_job("drive", values["form_values"], items=[])
+    update_job(job_id, destination=destination)
     worker = threading.Thread(
         target=process_drive_upload_job,
-        args=(job_id, values["account_id"], values["token"], values["drive_link"]),
+        args=(job_id, values["account_id"], values["token"], values["drive_link"], destination),
         daemon=True,
     )
     worker.start()
@@ -711,6 +1048,15 @@ def start_images_job(values, req_files):
     if not (values["account_id"] and values["token"]):
         raise ValueError("Please provide ad account ID and access token.")
 
+    destination = build_destination_config(values)
+    if destination.get("enabled"):
+        destination["resolved"] = resolve_destination(
+            values["account_id"],
+            values["token"],
+            destination.get("campaign_ref"),
+            destination.get("adset_ref"),
+        )
+
     workspace = Path(tempfile.mkdtemp(prefix="fb_img_job_"))
     files = save_uploaded_files(req_files, "images", workspace)
     if not files:
@@ -719,11 +1065,11 @@ def start_images_job(values, req_files):
 
     items = [{"file": p.name, "status": "queued", "percent": 0} for p in files]
     job_id = init_job("images", values["form_values"], items=items)
-    update_job(job_id, workspace_dir=str(workspace))
+    update_job(job_id, workspace_dir=str(workspace), destination=destination)
 
     worker = threading.Thread(
         target=process_images_upload_job,
-        args=(job_id, values["account_id"], values["token"]),
+        args=(job_id, values["account_id"], values["token"], destination),
         daemon=True,
     )
     worker.start()
@@ -734,6 +1080,15 @@ def start_videos_job(values, req_files):
     if not (values["account_id"] and values["token"]):
         raise ValueError("Please provide ad account ID and access token.")
 
+    destination = build_destination_config(values)
+    if destination.get("enabled"):
+        destination["resolved"] = resolve_destination(
+            values["account_id"],
+            values["token"],
+            destination.get("campaign_ref"),
+            destination.get("adset_ref"),
+        )
+
     workspace = Path(tempfile.mkdtemp(prefix="fb_vid_job_"))
     files = save_uploaded_files(req_files, "videos", workspace)
     if not files:
@@ -742,11 +1097,11 @@ def start_videos_job(values, req_files):
 
     items = [{"file": p.name, "status": "queued", "percent": 0} for p in files]
     job_id = init_job("videos", values["form_values"], items=items)
-    update_job(job_id, workspace_dir=str(workspace))
+    update_job(job_id, workspace_dir=str(workspace), destination=destination)
 
     worker = threading.Thread(
         target=process_videos_upload_job,
-        args=(job_id, values["account_id"], values["token"]),
+        args=(job_id, values["account_id"], values["token"], destination),
         daemon=True,
     )
     worker.start()
@@ -824,6 +1179,12 @@ def job_status_page(job_id: str):
     return render_page(result=format_job_state_for_api(payload), form_values=payload.get("form_values"))
 
 
+# Backward-compatible route aliases for previously shared URLs.
+@app.route("/upload/drive/status/<job_id>", methods=["GET"])
+def legacy_drive_status_page(job_id: str):
+    return redirect(url_for("job_status_page", job_id=job_id))
+
+
 @app.route("/api/upload/drive/start", methods=["POST"])
 def api_start_drive():
     values = parse_common_form_values(request)
@@ -887,6 +1248,11 @@ def api_job_status(job_id: str):
     if not payload:
         return jsonify({"ok": False, "error": f"Job not found: {job_id}"}), 404
     return jsonify({"ok": True, "job": format_job_state_for_api(payload)})
+
+
+@app.route("/api/upload/drive/status/<job_id>", methods=["GET"])
+def legacy_api_drive_status(job_id: str):
+    return api_job_status(job_id)
 
 
 @app.route("/api/jobs/<job_id>/control", methods=["POST"])
