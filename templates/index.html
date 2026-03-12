@@ -15,8 +15,14 @@
     <section class="card">
       <h2>1) Google Drive -> Videos</h2>
       <form id="driveForm" method="post" action="/upload/drive">
-        <label>Google Drive Folder Link</label>
-        <input name="drive_link" type="url" value="{{ defaults['drive_link'] }}" required>
+        <label>Google Drive Folder or File Link</label>
+        <input
+          name="drive_link"
+          type="text"
+          value="{{ defaults['drive_link'] }}"
+          placeholder="Paste folder URL or single file URL"
+          required
+        >
 
         <label>Ad Account ID</label>
         <input name="ad_account_id" type="text" value="{{ defaults['ad_account_id'] }}" required>

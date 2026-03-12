@@ -609,6 +609,23 @@ def _extract_drive_folder_id(drive_link: str) -> str:
     return ""
 
 
+def _extract_drive_file_id(drive_link: str) -> str:
+    raw = (drive_link or "").strip()
+    if not raw:
+        return ""
+
+    parsed = urlparse(raw)
+    path = parsed.path or ""
+    m = re.search(r"/file/d/([A-Za-z0-9_-]{10,})", path)
+    if m:
+        return m.group(1)
+    q = parse_qs(parsed.query or "")
+    file_id = (q.get("id") or [""])[0].strip()
+    if file_id:
+        return file_id
+    return ""
+
+
 def _parse_drive_link_kind_and_id(href: str):
     url = urljoin("https://drive.google.com", href or "")
     parsed = urlparse(url)
@@ -690,11 +707,37 @@ def _list_drive_items_via_embedded(folder_id: str, visited=None):
     return files
 
 
-def list_drive_folder_items(drive_link: str):
+def _infer_drive_file_name(file_id: str) -> str:
+    if not file_id:
+        return "drive_file"
+    try:
+        url = f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
+        res = requests.get(url, timeout=30)
+        if res.status_code < 400:
+            soup = BeautifulSoup(res.text, "html.parser")
+            title = (soup.title.string or "").strip() if soup.title else ""
+            if title and " - Google Drive" in title:
+                title = title.replace(" - Google Drive", "").strip()
+            if title:
+                return title.replace("\xa0", " ").strip()
+    except Exception:
+        pass
+    return f"file_{file_id}"
+
+
+def list_drive_items(drive_link: str):
+    input_link = (drive_link or "").strip()
+    if not input_link:
+        raise RuntimeError("Invalid Google Drive link. Please paste a valid folder or file URL.")
+
+    link_kind, link_id = _parse_drive_link_kind_and_id(input_link)
+    if link_kind == "file" and link_id:
+        return [{"id": link_id, "name": _infer_drive_file_name(link_id)}]
+
     gdown_err = None
     try:
         out = gdown.download_folder(
-            url=drive_link,
+            url=input_link,
             quiet=True,
             use_cookies=False,
             remaining_ok=True,
@@ -715,9 +758,12 @@ def list_drive_folder_items(drive_link: str):
     except Exception as exc:
         gdown_err = str(exc)
 
-    folder_id = _extract_drive_folder_id(drive_link)
+    folder_id = _extract_drive_folder_id(input_link)
     if not folder_id:
-        raise RuntimeError("Invalid Google Drive folder link. Please paste a valid folder URL.")
+        file_id = _extract_drive_file_id(input_link)
+        if file_id:
+            return [{"id": file_id, "name": _infer_drive_file_name(file_id)}]
+        raise RuntimeError("Invalid Google Drive link. Please paste a valid folder or file URL.")
 
     try:
         embedded_items = _list_drive_items_via_embedded(folder_id)
@@ -730,14 +776,21 @@ def list_drive_folder_items(drive_link: str):
                 "Unable to list files from this Google Drive folder. "
                 f"gdown error: {gdown_err} | embedded fallback error: {embedded_err}"
             )
-        raise RuntimeError(f"Unable to list files from this Google Drive folder: {embedded_err}")
+        # If folder parsing fails, attempt treating this as a single-file link.
+        file_id = _extract_drive_file_id(input_link) or link_id
+        if file_id:
+            return [{"id": file_id, "name": _infer_drive_file_name(file_id)}]
+        raise RuntimeError(f"Unable to list files from this Google Drive link: {embedded_err}")
 
     if gdown_err:
+        file_id = _extract_drive_file_id(input_link) or link_id
+        if file_id:
+            return [{"id": file_id, "name": _infer_drive_file_name(file_id)}]
         raise RuntimeError(
-            "Unable to list files from this Google Drive folder. "
+            "Unable to list files from this Google Drive link. "
             f"gdown error: {gdown_err}. Please try again after a minute if Drive rate-limited the folder."
         )
-    raise RuntimeError("No files found in this Google Drive folder.")
+    raise RuntimeError("No files found in this Google Drive link.")
 
 
 def update_item(job_id: str, file_name: str, **fields):
@@ -859,11 +912,11 @@ def process_drive_upload_job(job_id: str, account_id: str, token: str, drive_lin
     try:
         control_checkpoint(job_id)
         update_job(job_id, status="running", overall_percent=1)
-        set_step(job_id, "Scanning Google Drive folder")
+        set_step(job_id, "Scanning Google Drive link")
 
-        drive_items = list_drive_folder_items(drive_link)
+        drive_items = list_drive_items(drive_link)
         if not drive_items:
-            raise RuntimeError("No files found in Google Drive folder.")
+            raise RuntimeError("No files found in Google Drive link.")
 
         files_meta = drive_items
 
