@@ -9,9 +9,11 @@ import time
 import uuid
 from pathlib import Path
 from typing import Dict, List
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import gdown
 import requests
+from bs4 import BeautifulSoup
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 from werkzeug.utils import secure_filename
 
@@ -588,15 +590,154 @@ def compute_eta_seconds(started_at: int, overall_percent: float):
     return int(max(0, total_est - elapsed))
 
 
-def list_drive_folder_items(drive_link: str):
-    out = gdown.download_folder(
-        url=drive_link,
-        quiet=True,
-        use_cookies=False,
-        remaining_ok=True,
-        skip_download=True,
+def _extract_drive_folder_id(drive_link: str) -> str:
+    raw = (drive_link or "").strip()
+    if not raw:
+        return ""
+    if re.fullmatch(r"[A-Za-z0-9_-]{10,}", raw):
+        return raw
+
+    parsed = urlparse(raw)
+    path = parsed.path or ""
+    m = re.search(r"/folders/([A-Za-z0-9_-]{10,})", path)
+    if m:
+        return m.group(1)
+    q = parse_qs(parsed.query or "")
+    folder_id = (q.get("id") or [""])[0].strip()
+    if folder_id:
+        return folder_id
+    return ""
+
+
+def _parse_drive_link_kind_and_id(href: str):
+    url = urljoin("https://drive.google.com", href or "")
+    parsed = urlparse(url)
+    path = parsed.path or ""
+    query = parse_qs(parsed.query or "")
+
+    for pattern in (
+        r"/file/d/([A-Za-z0-9_-]{10,})",
+        r"/folders/([A-Za-z0-9_-]{10,})",
+    ):
+        m = re.search(pattern, path)
+        if m:
+            item_id = m.group(1)
+            return ("folder", item_id) if "/folders/" in pattern else ("file", item_id)
+
+    qid = (query.get("id") or [""])[0].strip()
+    if qid:
+        # `open?id=` and `uc?id=` links point to files.
+        return "file", qid
+    return None, ""
+
+
+def _list_drive_items_via_embedded(folder_id: str, visited=None):
+    if not folder_id:
+        return []
+
+    if visited is None:
+        visited = set()
+    if folder_id in visited:
+        return []
+    visited.add(folder_id)
+
+    url = f"https://drive.google.com/embeddedfolderview?id={folder_id}#list"
+    res = requests.get(
+        url,
+        timeout=60,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/126.0.0.0 Safari/537.36"
+            )
+        },
     )
-    return out or []
+    if res.status_code >= 400:
+        raise RuntimeError(f"Embedded folder view request failed with HTTP {res.status_code}.")
+
+    soup = BeautifulSoup(res.text, "html.parser")
+    anchors = soup.select("a[href]")
+    files = []
+    seen_file_ids = set()
+
+    for a in anchors:
+        href = a.get("href", "")
+        kind, item_id = _parse_drive_link_kind_and_id(href)
+        if not kind or not item_id:
+            continue
+
+        label = " ".join(a.get_text(" ", strip=True).split()).replace("\xa0", " ").strip()
+        if not label:
+            label = (a.get("title") or a.get("aria-label") or "").replace("\xa0", " ").strip()
+
+        if kind == "file":
+            if item_id in seen_file_ids:
+                continue
+            seen_file_ids.add(item_id)
+            files.append(
+                {
+                    "id": item_id,
+                    "name": label or f"file_{item_id}",
+                }
+            )
+            continue
+
+        # Nested public subfolders are also supported.
+        nested = _list_drive_items_via_embedded(item_id, visited=visited)
+        files.extend(nested)
+
+    return files
+
+
+def list_drive_folder_items(drive_link: str):
+    gdown_err = None
+    try:
+        out = gdown.download_folder(
+            url=drive_link,
+            quiet=True,
+            use_cookies=False,
+            remaining_ok=True,
+            skip_download=True,
+        )
+        if out:
+            parsed = []
+            for item in out:
+                raw_name = Path(getattr(item, "path", "")).name or getattr(item, "id", "unknown")
+                parsed.append(
+                    {
+                        "id": getattr(item, "id", ""),
+                        "name": str(raw_name).replace("\xa0", " ").strip(),
+                    }
+                )
+            if parsed:
+                return parsed
+    except Exception as exc:
+        gdown_err = str(exc)
+
+    folder_id = _extract_drive_folder_id(drive_link)
+    if not folder_id:
+        raise RuntimeError("Invalid Google Drive folder link. Please paste a valid folder URL.")
+
+    try:
+        embedded_items = _list_drive_items_via_embedded(folder_id)
+        if embedded_items:
+            return embedded_items
+    except Exception as exc:
+        embedded_err = str(exc)
+        if gdown_err:
+            raise RuntimeError(
+                "Unable to list files from this Google Drive folder. "
+                f"gdown error: {gdown_err} | embedded fallback error: {embedded_err}"
+            )
+        raise RuntimeError(f"Unable to list files from this Google Drive folder: {embedded_err}")
+
+    if gdown_err:
+        raise RuntimeError(
+            "Unable to list files from this Google Drive folder. "
+            f"gdown error: {gdown_err}. Please try again after a minute if Drive rate-limited the folder."
+        )
+    raise RuntimeError("No files found in this Google Drive folder.")
 
 
 def update_item(job_id: str, file_name: str, **fields):
@@ -724,10 +865,7 @@ def process_drive_upload_job(job_id: str, account_id: str, token: str, drive_lin
         if not drive_items:
             raise RuntimeError("No files found in Google Drive folder.")
 
-        files_meta = []
-        for item in drive_items:
-            name = Path(getattr(item, "path", "")).name or getattr(item, "id", "unknown")
-            files_meta.append({"id": getattr(item, "id", ""), "name": name})
+        files_meta = drive_items
 
         items = [{"file": f["name"], "status": "queued", "percent": 0} for f in files_meta]
         update_job(job_id, items=items, total_files=len(items), overall_percent=2)
