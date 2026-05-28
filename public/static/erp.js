@@ -342,9 +342,10 @@ async function generatePaymentLink(e) {
 
     // ── Step 2: Generate payment link ─────────────────────
     let paymentLink = '';
+    let linkError   = '';
 
     if (orderUid) {
-      const linkRes = await fetch(`/api/erp/orders/${encodeURIComponent(orderUid)}/payment-link`, {
+      const linkRes    = await fetch(`/api/erp/orders/${encodeURIComponent(orderUid)}/payment-link`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -353,7 +354,11 @@ async function generatePaymentLink(e) {
         })
       });
       const linkResult = await linkRes.json();
-      paymentLink = linkResult.payment_link || linkResult.order?.payment_link || '';
+      if (!linkRes.ok) {
+        linkError = linkResult.error || linkResult.message || `Gateway error (HTTP ${linkRes.status})`;
+      } else {
+        paymentLink = linkResult.payment_link || linkResult.order?.payment_link || '';
+      }
     }
 
     // ── Step 3: Show result inline ─────────────────────────
@@ -376,10 +381,18 @@ async function generatePaymentLink(e) {
       linkInput.closest('.form-group').after(bar);
     }
 
-    const msg = paymentLink
-      ? `✅ Order ${orderUid} saved — payment link ready!`
-      : `✅ Order ${orderUid} saved (no payment link — check gateway config)`;
-    showMsg(messageEl, msg, 'ok');
+    let msg, msgType;
+    if (paymentLink) {
+      msg     = `✅ Order ${orderUid} saved — payment link ready!`;
+      msgType = 'ok';
+    } else if (linkError) {
+      msg     = `⚠️ Order ${orderUid} saved but payment link failed: ${linkError}`;
+      msgType = 'bad';
+    } else {
+      msg     = `✅ Order ${orderUid} saved (no payment link — check gateway config)`;
+      msgType = 'ok';
+    }
+    showMsg(messageEl, msg, msgType);
 
     // ── Step 4: Refresh orders list silently ──────────────
     fetch('/api/erp/orders').then(r => r.ok ? r.json() : null).then(d => {
