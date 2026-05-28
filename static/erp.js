@@ -343,9 +343,9 @@ async function generatePaymentLink(e) {
     // ── Step 2: Use link from save response (already generated server-side)
     //    Only call the payment-link endpoint if none came back with the order.
     let paymentLink = order.payment_link || '';
-    let linkError   = '';
+    let linkError   = order.payment_link_error || '';
 
-    if (orderUid && !paymentLink) {
+    if (orderUid && !paymentLink && !linkError) {
       const linkRes    = await fetch(`/api/erp/orders/${encodeURIComponent(orderUid)}/payment-link`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

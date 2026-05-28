@@ -887,26 +887,31 @@ def create_order(payload: Dict) -> Dict:
     payment_link = str(payload.get("payment_link") or "").strip()
     payment_provider = str(payload.get("payment_provider") or get_active_payment_provider()).strip().lower() or "manual"
     gateway_reference = str(payload.get("gateway_reference") or payload.get("xpay_reference") or "").strip() or None
+    payment_link_error = None
     if not payment_link:
         if order_type == "puja":
             _description = f"Puja – {puja_name} at {temple_name}"
         else:
             _description = item_name or "E-commerce Order"
-        link_data = create_payment_link_details(
-            amount=amount,
-            order_type=order_type,
-            metadata={
-                "customer_name": customer_name,
-                "phone": phone,
-                "email": email,
-                "description": _description,
-            },
-            order_uid=order_uid,
-            currency=currency,
-        )
-        payment_link = link_data["payment_link"]
-        payment_provider = str(link_data.get("payment_provider") or payment_provider or "manual").strip().lower()
-        gateway_reference = str(link_data.get("gateway_reference") or gateway_reference or "").strip() or None
+        try:
+            link_data = create_payment_link_details(
+                amount=amount,
+                order_type=order_type,
+                metadata={
+                    "customer_name": customer_name,
+                    "phone": phone,
+                    "email": email,
+                    "description": _description,
+                },
+                order_uid=order_uid,
+                currency=currency,
+            )
+            payment_link = link_data["payment_link"]
+            payment_provider = str(link_data.get("payment_provider") or payment_provider or "manual").strip().lower()
+            gateway_reference = str(link_data.get("gateway_reference") or gateway_reference or "").strip() or None
+        except Exception as exc:
+            payment_link_error = str(exc)
+            payment_provider = "manual"
 
     now = utc_now_iso()
     status = str(payload.get("status") or "pending").strip() or "pending"
@@ -972,7 +977,10 @@ def create_order(payload: Dict) -> Dict:
             ),
         )
         row = conn.execute("SELECT * FROM erp_orders WHERE order_uid = ?", (order_uid,)).fetchone()
-    return serialize_order_row(row)
+    result = serialize_order_row(row)
+    if payment_link_error:
+        result["payment_link_error"] = payment_link_error
+    return result
 
 
 def list_orders(limit: int = 100, order_type: str = "") -> List[Dict]:
