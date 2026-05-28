@@ -340,11 +340,12 @@ async function generatePaymentLink(e) {
     const idEl = form.querySelector('.order-id-value');
     if (idEl && orderUid) idEl.textContent = orderUid;
 
-    // ── Step 2: Generate payment link ─────────────────────
-    let paymentLink = '';
+    // ── Step 2: Use link from save response (already generated server-side)
+    //    Only call the payment-link endpoint if none came back with the order.
+    let paymentLink = order.payment_link || '';
     let linkError   = '';
 
-    if (orderUid) {
+    if (orderUid && !paymentLink) {
       const linkRes    = await fetch(`/api/erp/orders/${encodeURIComponent(orderUid)}/payment-link`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
