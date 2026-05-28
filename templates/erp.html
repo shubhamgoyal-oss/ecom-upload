@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>App Store Bharat ERP</title>
+  <link rel="stylesheet" href="/static/erp.css">
+</head>
+<body>
+  <div class="erp-layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h1 class="logo">🛍️ ASB ERP</h1>
+        <p class="tagline">Order Management</p>
+      </div>
+
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-section="create-order">
+          <span class="icon">📝</span>
+          <span class="label">Create Order</span>
+        </button>
+        <button class="nav-item" data-section="orders">
+          <span class="icon">📋</span>
+          <span class="label">View Orders</span>
+        </button>
+        <button class="nav-item" data-section="analytics">
+          <span class="icon">📊</span>
+          <span class="label">Analytics</span>
+        </button>
+        <button class="nav-item" data-section="settings">
+          <span class="icon">⚙️</span>
+          <span class="label">Settings</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="version-info">
+          <small>v{{ app_meta.version }}</small>
+          <small>{{ app_meta.boot_utc }}</small>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <!-- CREATE ORDER SECTION -->
+      <section id="create-order" class="section-panel active">
+        <div class="section-header">
+          <h2>Create New Order</h2>
+          <p class="section-subtitle">Fill in the details to create a new manual order</p>
+        </div>
+
+        <!-- Order Type Selector -->
+        <div class="order-type-selector">
+          <button class="type-btn active" data-type="puja">
+            <span class="type-icon">🙏</span>
+            <span class="type-name">Puja Order</span>
+          </button>
+          <button class="type-btn" data-type="ecommerce">
+            <span class="type-icon">🛒</span>
+            <span class="type-name">E-commerce Order</span>
+          </button>
+        </div>
+
+        <!-- PUJA ORDER FORM -->
+        <div class="form-container" id="puja-form-container">
+          <form id="pujaForm" class="order-form">
+            <input type="hidden" name="order_type" value="puja">
+            <input type="hidden" name="order_uid" value="">
+
+            <div class="order-header-bar">
+              <span>Order ID: <strong class="order-id-value">New Order</strong></span>
+              <span class="form-status-indicator" id="puja-status"></span>
+            </div>
+
+            <!-- Customer Section -->
+            <div class="form-section">
+              <h3 class="section-title">👤 Customer Details</h3>
+              <div class="form-grid cols-2">
+                <div class="form-group">
+                  <label for="pujaName">Full Name *</label>
+                  <input id="pujaName" name="customer_name" type="text" placeholder="Customer name" required>
+                </div>
+                <div class="form-group">
+                  <label for="pujaPhone">Phone Number *</label>
+                  <input id="pujaPhone" name="phone" type="tel" placeholder="+91 XXXXX XXXXX" required>
+                </div>
+                <div class="form-group">
+                  <label for="pujaEmail">Email Address *</label>
+                  <input id="pujaEmail" name="email" type="email" placeholder="customer@example.com" required>
+                </div>
+              </div>
+            </div>
+
+            <!-- Puja Details Section -->
+            <div class="form-section">
+              <h3 class="section-title">🕉️ Puja Details</h3>
+              <div class="form-grid cols-2">
+                <div class="form-group">
+                  <label for="pujaPuja">Puja Name *</label>
+                  <input id="pujaPuja" name="puja_name" type="text" placeholder="e.g., Navratri Puja" required>
+                </div>
+                <div class="form-group">
+                  <label for="pujaTemple">Temple Name *</label>
+                  <input id="pujaTemple" name="temple_name" type="text" placeholder="e.g., Hanuman Temple" required>
+                </div>
+                <div class="form-group">
+                  <label for="pujaSchedule">Puja Schedule Date *</label>
+                  <input id="pujaSchedule" name="puja_schedule_date" type="date" required>
+                </div>
+              </div>
+            </div>
+
+            <!-- Payment Section -->
+            <div class="form-section">
+              <h3 class="section-title">💳 Payment Details</h3>
+              <div class="form-grid cols-3">
+                <div class="form-group">
+                  <label for="pujaPaymentDate">Payment Date *</label>
+                  <input id="pujaPaymentDate" name="payment_date" type="date" value="{{ today }}" required>
+                </div>
+                <div class="form-group">
+                  <label for="pujaAmount">Amount *</label>
+                  <input id="pujaAmount" name="amount" type="number" min="1" step="0.01" placeholder="0.00" required>
+                </div>
+                <div class="form-group">
+                  <label for="pujaCurrency">Currency *</label>
+                  <select id="pujaCurrency" name="currency" required>
+                    {% for currency in supported_currencies %}
+                    <option value="{{ currency }}" {% if currency == default_currency %}selected{% endif %}>{{ currency }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="pujaPaymentLink">Payment Link</label>
+                <div class="input-with-button">
+                  <input id="pujaPaymentLink" name="payment_link" type="url" placeholder="Auto-generated or paste custom link">
+                  <button type="button" class="btn btn-secondary generate-link" data-busy-text="Generating...">Generate Link</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Notes Section -->
+            <div class="form-section">
+              <h3 class="section-title">📝 Notes</h3>
+              <div class="form-group">
+                <label for="pujaNotes">Internal Notes (optional)</label>
+                <textarea id="pujaNotes" name="notes" rows="3" placeholder="Any special instructions or comments..."></textarea>
+              </div>
+            </div>
+
+            <!-- Form Actions -->
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary btn-lg" data-action="save-order" data-busy-text="Saving...">💾 Save Puja Order</button>
+              <button type="reset" class="btn btn-outline">Clear Form</button>
+            </div>
+            <p class="message" role="status" aria-live="polite"></p>
+          </form>
+        </div>
+
+        <!-- ECOMMERCE ORDER FORM -->
+        <div class="form-container hidden" id="ecom-form-container">
+          <form id="ecomForm" class="order-form">
+            <input type="hidden" name="order_type" value="ecommerce">
+            <input type="hidden" name="order_uid" value="">
+
+            <div class="order-header-bar">
+              <span>Order ID: <strong class="order-id-value">New Order</strong></span>
+              <span class="form-status-indicator" id="ecom-status"></span>
+            </div>
+
+            <!-- Customer Section -->
+            <div class="form-section">
+              <h3 class="section-title">👤 Customer Details</h3>
+              <div class="form-grid cols-2">
+                <div class="form-group">
+                  <label for="ecomName">Full Name *</label>
+                  <input id="ecomName" name="customer_name" type="text" placeholder="Customer name" required>
+                </div>
+                <div class="form-group">
+                  <label for="ecomPhone">Phone Number *</label>
+                  <input id="ecomPhone" name="phone" type="tel" placeholder="+91 XXXXX XXXXX" required>
+                </div>
+                <div class="form-group">
+                  <label for="ecomEmail">Email Address *</label>
+                  <input id="ecomEmail" name="email" type="email" placeholder="customer@example.com" required>
+                </div>
+              </div>
+            </div>
+
+            <!-- Order Details Section -->
+            <div class="form-section">
+              <h3 class="section-title">📦 Order Details</h3>
+              <div class="form-grid cols-2">
+                <div class="form-group">
+                  <label for="ecomItem">Item Name *</label>
+                  <input id="ecomItem" name="item_name" type="text" placeholder="e.g., Premium Diwali Gift Pack" required>
+                </div>
+                <div class="form-group">
+                  <label for="ecomQty">Quantity *</label>
+                  <input id="ecomQty" name="quantity" type="number" min="1" step="1" value="1" required>
+                </div>
+              </div>
+            </div>
+
+            <!-- Shipping Address Section -->
+            <div class="form-section">
+              <h3 class="section-title">📍 Shipping Address</h3>
+              <div class="form-grid cols-2">
+                <div class="form-group">
+                  <label for="ecomAddress1">Address Line 1 *</label>
+                  <input id="ecomAddress1" name="address_line1" type="text" placeholder="Street address" required>
+                </div>
+                <div class="form-group">
+                  <label for="ecomAddress2">Address Line 2</label>
+                  <input id="ecomAddress2" name="address_line2" type="text" placeholder="Apartment, suite, etc. (optional)">
+                </div>
+                <div class="form-group">
+                  <label for="ecomCity">City *</label>
+                  <input id="ecomCity" name="city" type="text" placeholder="City name" required>
+                </div>
+                <div class="form-group">
+                  <label for="ecomState">State *</label>
+                  <input id="ecomState" name="state" type="text" placeholder="State name" required>
+                </div>
+                <div class="form-group">
+                  <label for="ecomPostal">Postal Code *</label>
+                  <input id="ecomPostal" name="postal_code" type="text" placeholder="PIN code" required>
+                </div>
+              </div>
+            </div>
+
+            <!-- Payment Section -->
+            <div class="form-section">
+              <h3 class="section-title">💳 Payment Details</h3>
+              <div class="form-grid cols-3">
+                <div class="form-group">
+                  <label for="ecomPaymentDate">Payment Date *</label>
+                  <input id="ecomPaymentDate" name="payment_date" type="date" value="{{ today }}" required>
+                </div>
+                <div class="form-group">
+                  <label for="ecomAmount">Amount *</label>
+                  <input id="ecomAmount" name="amount" type="number" min="1" step="0.01" placeholder="0.00" required>
+                </div>
+                <div class="form-group">
+                  <label for="ecomCurrency">Currency *</label>
+                  <select id="ecomCurrency" name="currency" required>
+                    {% for currency in supported_currencies %}
+                    <option value="{{ currency }}" {% if currency == default_currency %}selected{% endif %}>{{ currency }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="ecomPaymentLink">Payment Link</label>
+                <div class="input-with-button">
+                  <input id="ecomPaymentLink" name="payment_link" type="url" placeholder="Auto-generated or paste custom link">
+                  <button type="button" class="btn btn-secondary generate-link" data-busy-text="Generating...">Generate Link</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Notes Section -->
+            <div class="form-section">
+              <h3 class="section-title">📝 Notes</h3>
+              <div class="form-group">
+                <label for="ecomNotes">Internal Notes (optional)</label>
+                <textarea id="ecomNotes" name="notes" rows="3" placeholder="Any special instructions or comments..."></textarea>
+              </div>
+            </div>
+
+            <!-- Form Actions -->
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary btn-lg" data-action="save-order" data-busy-text="Saving...">💾 Save E-commerce Order</button>
+              <button type="reset" class="btn btn-outline">Clear Form</button>
+            </div>
+            <p class="message" role="status" aria-live="polite"></p>
+          </form>
+        </div>
+      </section>
+
+      <!-- ORDERS SECTION -->
+      <section id="orders" class="section-panel">
+        <div class="section-header">
+          <h2>Order History</h2>
+          <p class="section-subtitle">View and manage all orders</p>
+        </div>
+
+        <div class="orders-toolbar">
+          <div class="search-box">
+            <input type="text" id="orderSearch" placeholder="🔍 Search orders...">
+          </div>
+          <div class="filter-group">
+            <select id="orderTypeFilter">
+              <option value="">All Types</option>
+              <option value="puja">🙏 Puja Orders</option>
+              <option value="ecommerce">🛒 E-commerce Orders</option>
+            </select>
+            <select id="paymentStatusFilter">
+              <option value="">All Status</option>
+              <option value="paid">✅ Paid</option>
+              <option value="unpaid">⏳ Unpaid</option>
+              <option value="pending">⏸ Pending</option>
+              <option value="failed">❌ Failed</option>
+            </select>
+            <button id="refreshOrders" class="btn btn-secondary" data-busy-text="Refreshing...">🔄 Refresh</button>
+          </div>
+        </div>
+
+        <div class="orders-table-container">
+          <table class="orders-table">
+            <thead>
+              <tr>
+                <th>Order ID</th>
+                <th>Type</th>
+                <th>Customer</th>
+                <th>Item / Service</th>
+                <th>Amount</th>
+                <th>Payment Status</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="ordersTableBody"></tbody>
+          </table>
+          <div class="empty-state" id="ordersEmptyState">
+            <div class="empty-icon">📭</div>
+            <p class="empty-title">No orders found</p>
+            <p class="empty-desc">Create your first order to get started.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ANALYTICS SECTION -->
+      <section id="analytics" class="section-panel">
+        <div class="section-header">
+          <h2>Analytics & Statistics</h2>
+          <p class="section-subtitle">View order metrics and system status</p>
+        </div>
+
+        <!-- Quick Stats -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-icon">📊</div>
+            <div class="stat-content">
+              <p class="stat-label">Total Orders</p>
+              <p class="stat-value" id="statTotal">0</p>
+            </div>
+          </div>
+          <div class="stat-card success">
+            <div class="stat-icon">✅</div>
+            <div class="stat-content">
+              <p class="stat-label">Paid Orders</p>
+              <p class="stat-value" id="statPaid">0</p>
+            </div>
+          </div>
+          <div class="stat-card warning">
+            <div class="stat-icon">⏳</div>
+            <div class="stat-content">
+              <p class="stat-label">Unpaid Orders</p>
+              <p class="stat-value" id="statUnpaid">0</p>
+            </div>
+          </div>
+          <div class="stat-card pending">
+            <div class="stat-icon">⏸</div>
+            <div class="stat-content">
+              <p class="stat-label">Pending Orders</p>
+              <p class="stat-value" id="statPending">0</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Payment Gateway Info -->
+        <div class="info-grid">
+          <div class="info-card">
+            <h3>💳 Payment Gateway</h3>
+            <div class="info-item">
+              <span class="label">Active Gateway:</span>
+              <span class="value" id="activePaymentProvider">{{ backend_boot.payment_provider_label }}</span>
+            </div>
+            <div class="info-item">
+              <span class="label">API Status:</span>
+              <span class="value status-badge {% if backend_boot.razorpay_api_configured or backend_boot.xpay_direct_api_configured %}active{% else %}inactive{% endif %}">
+                {% if backend_boot.razorpay_api_configured or backend_boot.xpay_direct_api_configured %}Configured{% else %}Not Configured{% endif %}
+              </span>
+            </div>
+            <div class="info-item">
+              <span class="label">Webhook:</span>
+              <span class="value">
+                <code id="gatewayWebhookPath">{{ backend_boot.webhook_url_path }}</code>
+              </span>
+            </div>
+          </div>
+
+          <div class="info-card">
+            <h3>⚙️ System Information</h3>
+            <div class="info-item">
+              <span class="label">Database:</span>
+              <span class="value"><code id="backendDbPath">{{ backend_boot.db_path }}</code></span>
+            </div>
+            <div class="info-item">
+              <span class="label">Version:</span>
+              <span class="value">{{ app_meta.version }}</span>
+            </div>
+            <div class="info-item">
+              <span class="label">Boot Time:</span>
+              <span class="value">{{ app_meta.boot_utc }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Order Inspector -->
+        <div class="inspector-panel">
+          <h3>🔍 Inspect Order Details</h3>
+          <div class="inspector-controls">
+            <select id="backendOrderSelect">
+              <option value="">Select an order to inspect...</option>
+              {% for order in orders %}
+              <option value="{{ order.order_uid }}">{{ order.order_uid }}</option>
+              {% endfor %}
+            </select>
+            <button id="inspectBackendOrder" class="btn btn-secondary" data-busy-text="Loading...">Inspect</button>
+            <button id="refreshBackend" class="btn btn-secondary" data-busy-text="Refreshing...">Refresh List</button>
+          </div>
+          <pre id="backendJson" class="json-viewer">Select an order to view its complete data structure.</pre>
+        </div>
+      </section>
+
+      <!-- SETTINGS SECTION -->
+      <section id="settings" class="section-panel">
+        <div class="section-header">
+          <h2>Settings & Configuration</h2>
+          <p class="section-subtitle">System settings and payment gateway configuration</p>
+        </div>
+
+        <div class="settings-grid">
+          <div class="settings-card">
+            <h3>🌍 Default Currency</h3>
+            <p class="setting-value">{{ default_currency }}</p>
+            <p class="setting-desc">Currency used for new orders by default</p>
+          </div>
+
+          <div class="settings-card">
+            <h3>💳 Payment Providers</h3>
+            <p class="setting-value">Razorpay & Xpay</p>
+            <p class="setting-desc">Configured payment gateways for link generation</p>
+          </div>
+
+          <div class="settings-card">
+            <h3>📊 Supported Currencies</h3>
+            <p class="setting-value">{{ supported_currencies | join(', ') }}</p>
+            <p class="setting-desc">Currencies available for orders</p>
+          </div>
+        </div>
+
+        <div class="settings-note">
+          <p>⚙️ For advanced configuration, contact your system administrator.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script id="ordersBoot" type="application/json">{{ orders | tojson }}</script>
+  <script id="backendBoot" type="application/json">{{ backend_boot | tojson }}</script>
+  <script id="appConfig" type="application/json">{"supported_currencies": {{ supported_currencies | tojson }}, "default_currency": {{ default_currency | tojson }}}</script>
+  <script src="/static/erp.js"></script>
+</body>
+</html>

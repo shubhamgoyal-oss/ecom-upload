@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
+import hashlib
+import hmac
 import json
 import os
 import re
 import shutil
+import sqlite3
 import tempfile
 import threading
 import time
 import uuid
+from base64 import b64encode
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import gdown
@@ -17,8 +23,43 @@ from bs4 import BeautifulSoup
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 from werkzeug.utils import secure_filename
 
-app = Flask(__name__)
+
+def load_local_env(env_path: Path):
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or key in os.environ:
+            continue
+
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+load_local_env(Path(__file__).with_name(".env"))
+
+app = Flask(
+    __name__,
+    static_folder="public/static",
+    static_url_path="/static",
+    template_folder="templates",
+)
 app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024 * 1024
+
+
+def env_flag(name: str, default: str = "false") -> bool:
+    return str(os.environ.get(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+IS_VERCEL = env_flag("VERCEL", "false") or bool(os.environ.get("VERCEL_ENV"))
 
 API_VERSION = "v25.0"
 DEFAULT_DRIVE_LINK = os.environ.get(
@@ -47,6 +88,45 @@ APP_BOOT_UTC = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
 
 JOB_DIR = Path("/tmp/fb_media_jobs")
 TERMINAL_STATUSES = {"completed", "completed_with_errors", "failed", "stopped"}
+ERP_DB_PATH = Path(
+    os.environ.get(
+        "ERP_DB_PATH",
+        "/tmp/erp_orders.db" if IS_VERCEL else str(Path(__file__).with_name("erp_orders.db")),
+    )
+)
+PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "auto").strip().lower() or "auto"
+RAZORPAY_API_BASE_URL = os.environ.get("RAZORPAY_API_BASE_URL", "https://api.razorpay.com/v1").strip()
+RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "").strip()
+RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "").strip()
+RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "").strip()
+RAZORPAY_CALLBACK_URL = os.environ.get("RAZORPAY_CALLBACK_URL", "").strip()
+RAZORPAY_LINK_EXPIRY_HOURS = int(os.environ.get("RAZORPAY_LINK_EXPIRY_HOURS", "24"))
+RAZORPAY_NOTIFY_SMS = env_flag("RAZORPAY_NOTIFY_SMS", "true")
+RAZORPAY_NOTIFY_EMAIL = env_flag("RAZORPAY_NOTIFY_EMAIL", "true")
+RAZORPAY_REMINDER_ENABLE = env_flag("RAZORPAY_REMINDER_ENABLE", "true")
+XPAY_LINK_API_URL = os.environ.get("XPAY_LINK_API_URL", "").strip()
+XPAY_SYNC_API_URL = os.environ.get("XPAY_SYNC_API_URL", "").strip()
+XPAY_API_KEY = os.environ.get("XPAY_API_KEY", "").strip()
+XPAY_PAYMENT_LINK_TEMPLATE = os.environ.get("XPAY_PAYMENT_LINK_TEMPLATE", "").strip()
+XPAY_PAYMENT_LINK_BASE = os.environ.get("XPAY_PAYMENT_LINK_BASE", "https://xpay.local/pay").strip()
+XPAY_API_BASE_URL = os.environ.get("XPAY_API_BASE_URL", "https://api.xpaycheckout.com").strip()
+XPAY_PUBLIC_KEY = os.environ.get("XPAY_PUBLIC_KEY", "").strip()
+XPAY_PRIVATE_KEY = (
+    os.environ.get("XPAY_PRIVATE_KEY", "").strip()
+    or os.environ.get("XPAY_SECRET_KEY", "").strip()
+)
+XPAY_CALLBACK_URL = os.environ.get("XPAY_CALLBACK_URL", "").strip()
+XPAY_CANCEL_URL = os.environ.get("XPAY_CANCEL_URL", "").strip()
+XPAY_LINK_EXPIRY_HOURS = int(os.environ.get("XPAY_LINK_EXPIRY_HOURS", "24"))
+XPAY_PHONE_REQUIRED = env_flag("XPAY_PHONE_REQUIRED", "false")
+DEFAULT_CURRENCY = os.environ.get("DEFAULT_CURRENCY", "INR").strip().upper() or "INR"
+SUPPORTED_CURRENCIES = [
+    c.strip().upper()
+    for c in (os.environ.get("SUPPORTED_CURRENCIES", "INR,USD,EUR,GBP,AED,SGD").split(","))
+    if c.strip()
+]
+if DEFAULT_CURRENCY not in SUPPORTED_CURRENCIES:
+    SUPPORTED_CURRENCIES.insert(0, DEFAULT_CURRENCY)
 
 
 class StopRequested(Exception):
@@ -170,29 +250,1069 @@ def format_job_state_for_api(payload: Dict):
     return data
 
 
-def render_page(result=None, form_values=None):
-    defaults = {
-        "drive_link": DEFAULT_DRIVE_LINK,
-        "ad_account_id": DEFAULT_AD_ACCOUNT_ID,
-        "access_token": DEFAULT_ACCESS_TOKEN,
-        "campaign_ref": DEFAULT_CAMPAIGN_REF,
-        "adset_ref": DEFAULT_ADSET_REF,
-        "page_id": DEFAULT_PAGE_ID,
-        "destination_url": DEFAULT_DESTINATION_URL,
-        "primary_text": DEFAULT_PRIMARY_TEXT,
-        "headline": DEFAULT_HEADLINE,
-        "cta_type": DEFAULT_CTA_TYPE,
-        "attach_to_adset": False,
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def today_iso() -> str:
+    return datetime.now().date().isoformat()
+
+
+def get_erp_conn():
+    ERP_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(ERP_DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_erp_db():
+    with get_erp_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS erp_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_uid TEXT NOT NULL UNIQUE,
+                order_type TEXT NOT NULL CHECK (order_type IN ('puja', 'ecommerce')),
+                payment_provider TEXT NOT NULL DEFAULT 'manual',
+                customer_name TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                email TEXT NOT NULL,
+                payment_date TEXT NOT NULL,
+                order_date TEXT NOT NULL,
+                amount TEXT NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'INR',
+                payment_link TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                payment_status TEXT NOT NULL DEFAULT 'unpaid',
+                paid_at TEXT,
+                payment_txn_id TEXT,
+                payment_amount TEXT,
+                payment_payload TEXT,
+                puja_name TEXT,
+                temple_name TEXT,
+                puja_schedule_date TEXT,
+                address_line1 TEXT,
+                address_line2 TEXT,
+                city TEXT,
+                state TEXT,
+                postal_code TEXT,
+                item_name TEXT,
+                quantity INTEGER,
+                notes TEXT,
+                xpay_reference TEXT,
+                source TEXT NOT NULL DEFAULT 'manual',
+                raw_payload TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_erp_orders_created_at ON erp_orders(created_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_erp_orders_type ON erp_orders(order_type)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_erp_orders_xpay_ref ON erp_orders(xpay_reference)")
+
+        # Lightweight schema migration for existing local DBs.
+        existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(erp_orders)").fetchall()}
+        migration_columns = [
+            ("payment_provider", "TEXT NOT NULL DEFAULT 'manual'"),
+            ("payment_status", "TEXT NOT NULL DEFAULT 'unpaid'"),
+            ("paid_at", "TEXT"),
+            ("payment_txn_id", "TEXT"),
+            ("payment_amount", "TEXT"),
+            ("payment_payload", "TEXT"),
+            ("currency", f"TEXT NOT NULL DEFAULT '{DEFAULT_CURRENCY}'"),
+        ]
+        for name, ddl in migration_columns:
+            if name not in existing_cols:
+                conn.execute(f"ALTER TABLE erp_orders ADD COLUMN {name} {ddl}")
+
+
+def parse_date_input(raw_value: str, fallback: str = "") -> str:
+    value = str(raw_value or "").strip()
+    if not value:
+        return fallback
+
+    for parser in (
+        lambda x: datetime.fromisoformat(x.replace("Z", "+00:00")).date(),
+        lambda x: datetime.strptime(x, "%Y-%m-%d").date(),
+        lambda x: datetime.strptime(x, "%d/%m/%Y").date(),
+        lambda x: datetime.strptime(x, "%d-%m-%Y").date(),
+        lambda x: datetime.strptime(x, "%m/%d/%Y").date(),
+    ):
+        try:
+            return parser(value).isoformat()
+        except Exception:
+            continue
+    return fallback
+
+
+def parse_amount(raw_value: Any) -> str:
+    text = str(raw_value or "").strip().replace(",", "")
+    if not text:
+        raise ValueError("Amount is required.")
+    try:
+        amount = Decimal(text).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError):
+        raise ValueError("Amount must be a valid number.")
+    if amount <= 0:
+        raise ValueError("Amount must be greater than zero.")
+    return f"{amount}"
+
+
+def parse_currency(raw_value: Any, fallback: str = DEFAULT_CURRENCY) -> str:
+    value = str(raw_value or "").strip().upper()
+    currency = value or fallback
+    if currency not in SUPPORTED_CURRENCIES:
+        raise ValueError(
+            f"Currency '{currency}' is not supported. Allowed: {', '.join(SUPPORTED_CURRENCIES)}."
+        )
+    return currency
+
+
+def amount_to_minor_units(amount: Decimal, currency: str) -> int:
+    zero_decimal_currencies = {"JPY", "KRW", "VND", "CLP"}
+    three_decimal_currencies = {"BHD", "KWD", "OMR"}
+    if currency in zero_decimal_currencies:
+        exponent = Decimal("1")
+    elif currency in three_decimal_currencies:
+        exponent = Decimal("1000")
+    else:
+        exponent = Decimal("100")
+    return int((amount * exponent).to_integral_value())
+
+
+def minor_units_to_amount(raw_value: Any, currency: str) -> str:
+    text = str(raw_value or "").strip()
+    if not text:
+        return ""
+    try:
+        minor_units = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return ""
+
+    zero_decimal_currencies = {"JPY", "KRW", "VND", "CLP"}
+    three_decimal_currencies = {"BHD", "KWD", "OMR"}
+    if currency in zero_decimal_currencies:
+        divisor = Decimal("1")
+        precision = Decimal("1")
+    elif currency in three_decimal_currencies:
+        divisor = Decimal("1000")
+        precision = Decimal("0.001")
+    else:
+        divisor = Decimal("100")
+        precision = Decimal("0.01")
+
+    return f"{(minor_units / divisor).quantize(precision)}"
+
+
+def build_basic_authorization(username: str, password: str) -> str:
+    if not (username and password):
+        return ""
+    raw = f"{username}:{password}"
+    token = b64encode(raw.encode("utf-8")).decode("utf-8")
+    return f"Basic {token}"
+
+
+def build_xpay_basic_authorization() -> str:
+    return build_basic_authorization(XPAY_PUBLIC_KEY, XPAY_PRIVATE_KEY)
+
+
+def build_razorpay_basic_authorization() -> str:
+    return build_basic_authorization(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
+
+
+def normalize_contact_number(phone: str) -> str:
+    value = str(phone or "").strip()
+    if not value:
+        return ""
+    if value.startswith("+"):
+        return value
+    digits = re.sub(r"\D+", "", value)
+    if not digits:
+        return ""
+    if len(digits) == 10:
+        return f"+91{digits}"
+    return f"+{digits}"
+
+
+def build_xpay_link_payload(
+    *,
+    amount_decimal: Decimal,
+    currency: str,
+    order_type: str,
+    metadata: Dict,
+    order_uid: str,
+) -> Dict:
+    customer_name = str((metadata or {}).get("customer_name") or "").strip() or "Customer"
+    customer_email = str((metadata or {}).get("email") or "").strip() or "customer@example.com"
+    customer_phone = normalize_contact_number(str((metadata or {}).get("phone") or "").strip())
+
+    payload = {
+        "amount": amount_to_minor_units(amount_decimal, currency),
+        "currency": currency,
+        "customerDetails": {
+            "name": customer_name,
+            "email": customer_email,
+        },
+        "expiryDate": int((time.time() + (XPAY_LINK_EXPIRY_HOURS * 3600)) * 1000),
+        "receiptId": order_uid or uuid.uuid4().hex[:16],
+        "description": f"{order_type} order payment",
+        "phoneNumberRequired": XPAY_PHONE_REQUIRED,
     }
-    if form_values:
-        for key, value in form_values.items():
+    if customer_phone:
+        payload["customerDetails"]["contactNumber"] = customer_phone
+    if XPAY_CALLBACK_URL:
+        payload["callbackUrl"] = XPAY_CALLBACK_URL
+    if XPAY_CANCEL_URL:
+        payload["cancelUrl"] = XPAY_CANCEL_URL
+
+    return payload
+
+
+def build_razorpay_link_payload(
+    *,
+    amount_decimal: Decimal,
+    currency: str,
+    order_type: str,
+    metadata: Dict,
+    order_uid: str,
+) -> Dict:
+    customer_name = str((metadata or {}).get("customer_name") or "").strip() or "Customer"
+    customer_email = str((metadata or {}).get("email") or "").strip()
+    customer_phone = normalize_contact_number(str((metadata or {}).get("phone") or "").strip())
+
+    customer_payload: Dict[str, Any] = {"name": customer_name}
+    if customer_phone:
+        customer_payload["contact"] = customer_phone
+    if customer_email:
+        customer_payload["email"] = customer_email
+
+    payload: Dict[str, Any] = {
+        "amount": amount_to_minor_units(amount_decimal, currency),
+        "currency": currency,
+        "accept_partial": False,
+        "expire_by": int(time.time()) + (RAZORPAY_LINK_EXPIRY_HOURS * 3600),
+        "reference_id": (order_uid or uuid.uuid4().hex[:16])[:40],
+        "description": f"{order_type} order payment",
+        "customer": customer_payload,
+        "notify": {
+            "sms": RAZORPAY_NOTIFY_SMS,
+            "email": RAZORPAY_NOTIFY_EMAIL,
+        },
+        "reminder_enable": RAZORPAY_REMINDER_ENABLE,
+        "notes": {
+            "order_uid": order_uid or "",
+            "order_type": order_type,
+        },
+    }
+    if RAZORPAY_CALLBACK_URL:
+        payload["callback_url"] = RAZORPAY_CALLBACK_URL
+        payload["callback_method"] = "get"
+    return payload
+
+
+def extract_error_message(body: Any) -> str:
+    if isinstance(body, dict):
+        for path in (
+            ("error", "description"),
+            ("error", "reason"),
+            ("errorDescription",),
+            ("message",),
+            ("description",),
+        ):
+            current = body
+            for key in path:
+                if not isinstance(current, dict) or key not in current:
+                    current = None
+                    break
+                current = current.get(key)
+            if current:
+                return str(current).strip()
+    text = str(body or "").strip()
+    return text or "Unknown API error."
+
+
+def get_active_payment_provider() -> str:
+    preferred = PAYMENT_PROVIDER
+    if preferred in {"razorpay", "xpay"}:
+        return preferred
+    if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET:
+        return "razorpay"
+    if XPAY_PUBLIC_KEY and XPAY_PRIVATE_KEY:
+        return "xpay"
+    return "custom"
+
+
+def format_payment_provider_label(provider: str) -> str:
+    mapping = {
+        "razorpay": "Razorpay",
+        "xpay": "XPay",
+        "custom": "Custom",
+        "manual": "Manual",
+    }
+    return mapping.get(str(provider or "").strip().lower(), str(provider or "").strip().title() or "Unknown")
+
+
+def get_payment_webhook_path() -> str:
+    provider = get_active_payment_provider()
+    if provider == "razorpay":
+        return "/api/erp/razorpay/webhook"
+    return "/api/erp/xpay/webhook"
+
+
+def parse_unix_date(raw_value: Any, fallback: str = "") -> str:
+    text = str(raw_value or "").strip()
+    if not text:
+        return fallback
+    try:
+        return datetime.fromtimestamp(int(float(text)), tz=timezone.utc).date().isoformat()
+    except Exception:
+        return fallback
+
+
+def verify_razorpay_webhook_signature(raw_body: bytes, signature: str) -> None:
+    if not RAZORPAY_WEBHOOK_SECRET:
+        return
+    expected = hmac.new(
+        RAZORPAY_WEBHOOK_SECRET.encode("utf-8"),
+        raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, str(signature or "").strip()):
+        raise ValueError("Razorpay webhook signature verification failed.")
+
+
+def parse_positive_int(raw_value: Any, fallback: int = 1) -> int:
+    text = str(raw_value or "").strip()
+    if not text:
+        return fallback
+    try:
+        value = int(text)
+    except Exception:
+        raise ValueError("Quantity must be a whole number.")
+    if value <= 0:
+        raise ValueError("Quantity must be greater than zero.")
+    return value
+
+
+def build_order_uid() -> str:
+    return f"ASB-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+
+
+def extract_payment_link(body: Any) -> str:
+    if isinstance(body, dict):
+        for key in ("short_url", "shortUrl", "payment_link", "paymentLink", "url", "link"):
+            value = body.get(key)
             if value:
-                defaults[key] = value
-    app_meta = {
-        "version": APP_VERSION,
-        "boot_utc": APP_BOOT_UTC,
+                return str(value).strip()
+        data = body.get("data")
+        if isinstance(data, dict):
+            return extract_payment_link(data)
+    return ""
+
+
+def extract_gateway_reference(body: Any) -> str:
+    if isinstance(body, dict):
+        for key in ("id", "reference", "payment_link_id", "paymentLinkId"):
+            value = body.get(key)
+            if value:
+                return str(value).strip()
+        data = body.get("data")
+        if isinstance(data, dict):
+            return extract_gateway_reference(data)
+    return ""
+
+
+def create_payment_link_details(
+    amount: str,
+    order_type: str,
+    metadata: Dict = None,
+    order_uid: str = "",
+    currency: str = DEFAULT_CURRENCY,
+) -> Dict:
+    amount_decimal = Decimal(amount)
+    final_currency = parse_currency(currency)
+    amount_minor_units = amount_to_minor_units(amount_decimal, final_currency)
+    meta = dict(metadata or {})
+    if order_uid:
+        meta["order_uid"] = order_uid
+    payload = {
+        "amount": float(amount_decimal),
+        "amount_text": f"{amount_decimal}",
+        "amount_in_minor_units": amount_minor_units,
+        "currency": final_currency,
+        "order_type": order_type,
+        "merchant_order_id": order_uid or None,
+        "metadata": meta,
     }
-    return render_template("index.html", result=result, defaults=defaults, app_meta=app_meta)
+
+    provider = get_active_payment_provider()
+
+    if provider == "razorpay":
+        razorpay_auth = build_razorpay_basic_authorization()
+        if not razorpay_auth:
+            raise RuntimeError(
+                "Razorpay is selected but RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are not configured."
+            )
+
+        razorpay_payload = build_razorpay_link_payload(
+            amount_decimal=amount_decimal,
+            currency=final_currency,
+            order_type=order_type,
+            metadata=meta,
+            order_uid=order_uid,
+        )
+        razorpay_headers = {
+            "Content-Type": "application/json",
+            "Authorization": razorpay_auth,
+        }
+        razorpay_url = f"{RAZORPAY_API_BASE_URL.rstrip('/')}/payment_links"
+        resp = requests.post(razorpay_url, json=razorpay_payload, headers=razorpay_headers, timeout=60)
+        body = resp.json() if resp.text else {}
+        if resp.status_code >= 400:
+            message = extract_error_message(body)
+            raise RuntimeError(f"Razorpay payment-link creation failed with HTTP {resp.status_code}: {message}")
+        link = extract_payment_link(body)
+        if not link:
+            raise RuntimeError("Razorpay response did not include a payment link (`short_url`).")
+        return {
+            "payment_provider": "razorpay",
+            "payment_link": link,
+            "gateway_reference": extract_gateway_reference(body),
+            "raw_response": body,
+        }
+
+    # Direct xPay integration (from official xPay Payment Links API docs).
+    xpay_auth = build_xpay_basic_authorization()
+    if provider == "xpay" and xpay_auth:
+        xpay_payload = build_xpay_link_payload(
+            amount_decimal=amount_decimal,
+            currency=final_currency,
+            order_type=order_type,
+            metadata=meta,
+            order_uid=order_uid,
+        )
+        xpay_headers = {
+            "Content-Type": "application/json",
+            "Authorization": xpay_auth,
+        }
+        if order_uid:
+            xpay_headers["Idempotency-Key"] = order_uid
+
+        xpay_url = f"{XPAY_API_BASE_URL.rstrip('/')}/link/merchant/generate-link"
+        resp = requests.post(xpay_url, json=xpay_payload, headers=xpay_headers, timeout=60)
+        body = resp.json() if resp.text else {}
+        if resp.status_code >= 400:
+            message = extract_error_message(body)
+            if "Authentication Failed" in str(message):
+                raise RuntimeError(
+                    "xPay authentication failed. Verify that the server is using your xPay "
+                    "Public Key and xPay Private Key from the xPay dashboard API Keys page."
+                )
+            raise RuntimeError(f"xPay generate-link failed with HTTP {resp.status_code}: {message}")
+        link = extract_payment_link(body)
+        if not link:
+            raise RuntimeError("xPay response did not include a payment link (`shortUrl`).")
+        return {
+            "payment_provider": "xpay",
+            "payment_link": link,
+            "gateway_reference": extract_gateway_reference(body),
+            "raw_response": body,
+        }
+
+    headers = {"Content-Type": "application/json"}
+    if XPAY_API_KEY:
+        headers["Authorization"] = f"Bearer {XPAY_API_KEY}"
+
+    if XPAY_LINK_API_URL:
+        resp = requests.post(XPAY_LINK_API_URL, json=payload, headers=headers, timeout=60)
+        body = resp.json() if resp.text else {}
+        if resp.status_code >= 400:
+            raise RuntimeError(f"XPay payment-link API failed with HTTP {resp.status_code}: {body}")
+        link = extract_payment_link(body)
+        if not link:
+            raise RuntimeError("XPay API response did not include a payment link URL.")
+        return {
+            "payment_provider": "custom",
+            "payment_link": link,
+            "gateway_reference": extract_gateway_reference(body),
+            "raw_response": body,
+        }
+
+    if XPAY_PAYMENT_LINK_TEMPLATE:
+        try:
+            link = XPAY_PAYMENT_LINK_TEMPLATE.format(
+                amount=f"{amount_decimal}",
+                amount_in_paise=amount_minor_units,
+                currency=final_currency,
+                order_type=order_type,
+                order_uid=order_uid,
+                ref=uuid.uuid4().hex[:10],
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Invalid XPAY_PAYMENT_LINK_TEMPLATE: {exc}")
+        return {
+            "payment_provider": "custom",
+            "payment_link": link,
+            "gateway_reference": "",
+            "raw_response": payload,
+        }
+
+    return {
+        "payment_provider": "custom",
+        "payment_link": (
+            f"{XPAY_PAYMENT_LINK_BASE}"
+            f"?amount={amount_decimal}&amount_in_paise={amount_minor_units}&currency={final_currency}&order_type={order_type}"
+            f"&order_uid={order_uid}&ref={uuid.uuid4().hex[:10]}"
+        ),
+        "gateway_reference": "",
+        "raw_response": payload,
+    }
+
+
+def create_payment_link(
+    amount: str,
+    order_type: str,
+    metadata: Dict = None,
+    order_uid: str = "",
+    currency: str = DEFAULT_CURRENCY,
+) -> str:
+    return create_payment_link_details(
+        amount=amount,
+        order_type=order_type,
+        metadata=metadata,
+        order_uid=order_uid,
+        currency=currency,
+    )["payment_link"]
+
+
+def serialize_order_row(row: sqlite3.Row) -> Dict:
+    return {
+        "id": row["id"],
+        "order_uid": row["order_uid"],
+        "order_type": row["order_type"],
+        "payment_provider": row["payment_provider"],
+        "customer_name": row["customer_name"],
+        "phone": row["phone"],
+        "email": row["email"],
+        "payment_date": row["payment_date"],
+        "order_date": row["order_date"],
+        "amount": row["amount"],
+        "currency": row["currency"],
+        "payment_link": row["payment_link"],
+        "status": row["status"],
+        "payment_status": row["payment_status"],
+        "paid_at": row["paid_at"],
+        "payment_txn_id": row["payment_txn_id"],
+        "payment_amount": row["payment_amount"],
+        "puja_name": row["puja_name"],
+        "temple_name": row["temple_name"],
+        "puja_schedule_date": row["puja_schedule_date"],
+        "address_line1": row["address_line1"],
+        "address_line2": row["address_line2"],
+        "city": row["city"],
+        "state": row["state"],
+        "postal_code": row["postal_code"],
+        "item_name": row["item_name"],
+        "quantity": row["quantity"],
+        "notes": row["notes"],
+        "gateway_reference": row["xpay_reference"],
+        "xpay_reference": row["xpay_reference"],
+        "source": row["source"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def create_order(payload: Dict) -> Dict:
+    order_type = str(payload.get("order_type") or "").strip().lower()
+    if order_type not in {"puja", "ecommerce"}:
+        raise ValueError("Order type must be either 'puja' or 'ecommerce'.")
+
+    customer_name = str(payload.get("customer_name") or "").strip()
+    phone = str(payload.get("phone") or "").strip()
+    email = str(payload.get("email") or "").strip()
+    notes = str(payload.get("notes") or "").strip()
+    payment_date = parse_date_input(payload.get("payment_date"), fallback=today_iso())
+    amount = parse_amount(payload.get("amount"))
+    currency = parse_currency(payload.get("currency"), fallback=DEFAULT_CURRENCY)
+    order_date = payment_date
+
+    if not customer_name:
+        raise ValueError("Customer name is required.")
+    if not phone:
+        raise ValueError("Phone number is required.")
+    if not email:
+        raise ValueError("Email ID is required.")
+    if not payment_date:
+        raise ValueError("Payment date is required.")
+
+    puja_name = None
+    temple_name = None
+    puja_schedule_date = None
+    address_line1 = None
+    address_line2 = None
+    city = None
+    state = None
+    postal_code = None
+    item_name = None
+    quantity = None
+
+    if order_type == "puja":
+        puja_name = str(payload.get("puja_name") or "").strip()
+        temple_name = str(payload.get("temple_name") or "").strip()
+        puja_schedule_date = parse_date_input(str(payload.get("puja_schedule_date") or "").strip())
+        if not puja_name:
+            raise ValueError("Puja name is required for Puja orders.")
+        if not temple_name:
+            raise ValueError("Temple name is required for Puja orders.")
+        if not puja_schedule_date:
+            raise ValueError("Puja schedule date is required for Puja orders.")
+    else:
+        address_line1 = str(payload.get("address_line1") or "").strip()
+        address_line2 = str(payload.get("address_line2") or "").strip()
+        city = str(payload.get("city") or "").strip()
+        state = str(payload.get("state") or "").strip()
+        postal_code = str(payload.get("postal_code") or "").strip()
+        item_name = str(payload.get("item_name") or "").strip()
+        quantity = parse_positive_int(payload.get("quantity"), fallback=1)
+        if not address_line1:
+            raise ValueError("Address line 1 is required for e-commerce orders.")
+        if not city:
+            raise ValueError("City is required for e-commerce orders.")
+        if not state:
+            raise ValueError("State is required for e-commerce orders.")
+        if not postal_code:
+            raise ValueError("Postal code is required for e-commerce orders.")
+        if not item_name:
+            raise ValueError("Item name is required for e-commerce orders.")
+
+    order_uid = str(payload.get("order_uid") or "").strip() or build_order_uid()
+    payment_link = str(payload.get("payment_link") or "").strip()
+    payment_provider = str(payload.get("payment_provider") or get_active_payment_provider()).strip().lower() or "manual"
+    gateway_reference = str(payload.get("gateway_reference") or payload.get("xpay_reference") or "").strip() or None
+    if not payment_link:
+        link_data = create_payment_link_details(
+            amount=amount,
+            order_type=order_type,
+            metadata={
+                "customer_name": customer_name,
+                "phone": phone,
+                "email": email,
+            },
+            order_uid=order_uid,
+            currency=currency,
+        )
+        payment_link = link_data["payment_link"]
+        payment_provider = str(link_data.get("payment_provider") or payment_provider or "manual").strip().lower()
+        gateway_reference = str(link_data.get("gateway_reference") or gateway_reference or "").strip() or None
+
+    now = utc_now_iso()
+    status = str(payload.get("status") or "pending").strip() or "pending"
+    payment_status = str(payload.get("payment_status") or "unpaid").strip() or "unpaid"
+    source = str(payload.get("source") or "manual").strip() or "manual"
+    raw_payload = payload.get("raw_payload")
+
+    with get_erp_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO erp_orders (
+                order_uid, order_type, payment_provider, customer_name, phone, email,
+                payment_date, order_date, amount, currency, payment_link, status,
+                payment_status, paid_at, payment_txn_id, payment_amount, payment_payload,
+                puja_name, temple_name, puja_schedule_date,
+                address_line1, address_line2, city, state, postal_code,
+                item_name, quantity, notes, xpay_reference, source,
+                raw_payload, created_at, updated_at
+            ) VALUES (
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?
+            )
+            """,
+            (
+                order_uid,
+                order_type,
+                payment_provider,
+                customer_name,
+                phone,
+                email,
+                payment_date,
+                order_date,
+                amount,
+                currency,
+                payment_link,
+                status,
+                payment_status,
+                None,
+                None,
+                None,
+                None,
+                puja_name,
+                temple_name,
+                puja_schedule_date,
+                address_line1,
+                address_line2,
+                city,
+                state,
+                postal_code,
+                item_name,
+                quantity,
+                notes,
+                gateway_reference,
+                source,
+                raw_payload,
+                now,
+                now,
+            ),
+        )
+        row = conn.execute("SELECT * FROM erp_orders WHERE order_uid = ?", (order_uid,)).fetchone()
+    return serialize_order_row(row)
+
+
+def list_orders(limit: int = 100, order_type: str = "") -> List[Dict]:
+    safe_limit = max(1, min(int(limit or 100), 500))
+    query = "SELECT * FROM erp_orders"
+    params: List[Any] = []
+    filter_type = str(order_type or "").strip().lower()
+    if filter_type in {"puja", "ecommerce"}:
+        query += " WHERE order_type = ?"
+        params.append(filter_type)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(safe_limit)
+
+    with get_erp_conn() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [serialize_order_row(row) for row in rows]
+
+
+def get_order_by_uid(order_uid: str) -> Dict:
+    with get_erp_conn() as conn:
+        row = conn.execute("SELECT * FROM erp_orders WHERE order_uid = ? LIMIT 1", (order_uid,)).fetchone()
+    if not row:
+        return {}
+    return serialize_order_row(row)
+
+
+def parse_json_text(raw_text: str):
+    text = str(raw_text or "").strip()
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except Exception:
+        return {"raw": text}
+
+
+def get_backend_overview() -> Dict:
+    with get_erp_conn() as conn:
+        counts = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total_orders,
+                SUM(CASE WHEN payment_status = 'paid' THEN 1 ELSE 0 END) AS paid_orders,
+                SUM(CASE WHEN payment_status = 'unpaid' THEN 1 ELSE 0 END) AS unpaid_orders,
+                SUM(CASE WHEN payment_status = 'pending' THEN 1 ELSE 0 END) AS pending_orders
+            FROM erp_orders
+            """
+        ).fetchone()
+        latest = conn.execute(
+            "SELECT order_uid, updated_at FROM erp_orders ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+
+    return {
+        "db_path": str(ERP_DB_PATH),
+        "db_exists": ERP_DB_PATH.exists(),
+        "total_orders": int((counts["total_orders"] if counts else 0) or 0),
+        "paid_orders": int((counts["paid_orders"] if counts else 0) or 0),
+        "unpaid_orders": int((counts["unpaid_orders"] if counts else 0) or 0),
+        "pending_orders": int((counts["pending_orders"] if counts else 0) or 0),
+        "latest_order_uid": str(latest["order_uid"]) if latest else "",
+        "latest_order_updated_at": str(latest["updated_at"]) if latest else "",
+        "payment_provider": get_active_payment_provider(),
+        "payment_provider_label": format_payment_provider_label(get_active_payment_provider()),
+        "webhook_url_path": get_payment_webhook_path(),
+        "razorpay_api_configured": bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET),
+        "razorpay_webhook_secret_configured": bool(RAZORPAY_WEBHOOK_SECRET),
+        "xpay_direct_api_configured": bool(XPAY_PUBLIC_KEY and XPAY_PRIVATE_KEY),
+        "xpay_link_api_configured": bool(XPAY_LINK_API_URL),
+        "xpay_sync_api_configured": bool(XPAY_SYNC_API_URL),
+    }
+
+
+def get_order_backend_payload(order_uid: str) -> Dict:
+    with get_erp_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                order_uid, payment_provider, raw_payload, payment_payload, xpay_reference,
+                payment_txn_id, payment_status, status, created_at, updated_at
+            FROM erp_orders
+            WHERE order_uid = ?
+            LIMIT 1
+            """,
+            (order_uid,),
+        ).fetchone()
+
+    if not row:
+        return {}
+
+    return {
+        "order_uid": row["order_uid"],
+        "payment_provider": row["payment_provider"],
+        "payment_status": row["payment_status"],
+        "status": row["status"],
+        "gateway_reference": row["xpay_reference"],
+        "xpay_reference": row["xpay_reference"],
+        "payment_txn_id": row["payment_txn_id"],
+        "raw_payload": parse_json_text(row["raw_payload"]),
+        "payment_payload": parse_json_text(row["payment_payload"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def update_order_payment_link(order_uid: str, amount: str = "", currency: str = "") -> Dict:
+    existing = get_order_by_uid(order_uid)
+    if not existing:
+        raise ValueError(f"Order not found: {order_uid}")
+
+    final_amount = parse_amount(amount or existing.get("amount"))
+    final_currency = parse_currency(currency or existing.get("currency"), fallback=DEFAULT_CURRENCY)
+    link_data = create_payment_link_details(
+        amount=final_amount,
+        order_type=existing.get("order_type") or "ecommerce",
+        metadata={
+            "customer_name": existing.get("customer_name") or "",
+            "phone": existing.get("phone") or "",
+            "email": existing.get("email") or "",
+        },
+        order_uid=order_uid,
+        currency=final_currency,
+    )
+
+    now = utc_now_iso()
+    with get_erp_conn() as conn:
+        conn.execute(
+            """
+            UPDATE erp_orders
+            SET amount = ?, currency = ?, payment_link = ?, payment_status = ?,
+                payment_provider = ?, xpay_reference = COALESCE(?, xpay_reference), updated_at = ?
+            WHERE order_uid = ?
+            """,
+            (
+                final_amount,
+                final_currency,
+                link_data["payment_link"],
+                "unpaid",
+                str(link_data.get("payment_provider") or existing.get("payment_provider") or "manual"),
+                str(link_data.get("gateway_reference") or "").strip() or None,
+                now,
+                order_uid,
+            ),
+        )
+        row = conn.execute("SELECT * FROM erp_orders WHERE order_uid = ? LIMIT 1", (order_uid,)).fetchone()
+    return serialize_order_row(row)
+
+
+def resolve_order_uid_from_payment(payload: Dict) -> str:
+    order_uid = pick_value(payload, "order_uid", "merchant_order_id", "merchantOrderId")
+    if order_uid:
+        return order_uid
+
+    reference_id = pick_value(payload, "reference_id", "razorpay_payment_link_reference_id")
+    if reference_id:
+        return reference_id
+
+    maybe_order_id = pick_value(payload, "order_id")
+    if maybe_order_id.startswith("ASB-"):
+        return maybe_order_id
+
+    for nested_key in ("metadata", "notes", "data", "payload", "payment_link", "payment", "order", "entity"):
+        nested = payload.get(nested_key)
+        if isinstance(nested, dict):
+            order_uid = resolve_order_uid_from_payment(nested)
+            if order_uid:
+                return order_uid
+
+    for value in payload.values():
+        if isinstance(value, dict):
+            order_uid = resolve_order_uid_from_payment(value)
+            if order_uid:
+                return order_uid
+    return ""
+
+
+def record_order_payment(
+    *,
+    order_uid: str = "",
+    gateway_reference: str = "",
+    payment_provider: str = "",
+    payment_status: str = "",
+    payment_txn_id: str = "",
+    amount: str = "",
+    currency: str = "",
+    paid_at: str = "",
+    raw_payload: Any = None,
+) -> Dict:
+    normalized_status = str(payment_status or "").strip().lower()
+    if not normalized_status:
+        normalized_status = "paid"
+
+    status_map = {
+        "paid": "paid",
+        "success": "paid",
+        "captured": "paid",
+        "completed": "paid",
+        "payment_link.paid": "paid",
+        "failed": "failed",
+        "failure": "failed",
+        "cancelled": "unpaid",
+        "expired": "unpaid",
+        "created": "unpaid",
+        "issued": "unpaid",
+        "pending": "pending",
+        "processing": "pending",
+        "partially_paid": "pending",
+        "payment_link.partially_paid": "pending",
+    }
+    payment_state = status_map.get(normalized_status, "pending")
+    order_state = "paid" if payment_state == "paid" else "pending"
+
+    if not order_uid and gateway_reference:
+        with get_erp_conn() as conn:
+            row = conn.execute(
+                "SELECT order_uid FROM erp_orders WHERE xpay_reference = ? LIMIT 1",
+                (gateway_reference,),
+            ).fetchone()
+        if row:
+            order_uid = str(row["order_uid"])
+
+    if not order_uid:
+        raise ValueError("Unable to map payment to order: missing order_uid.")
+
+    existing = get_order_by_uid(order_uid)
+    if not existing:
+        raise ValueError(f"Order not found for payment update: {order_uid}")
+
+    final_amount = parse_amount(amount or existing.get("amount"))
+    final_currency = parse_currency(currency or existing.get("currency"), fallback=DEFAULT_CURRENCY)
+    final_paid_at = parse_date_input(paid_at, fallback=today_iso()) if paid_at else today_iso()
+    now = utc_now_iso()
+    payload_text = json.dumps(raw_payload or {}, ensure_ascii=True)
+
+    with get_erp_conn() as conn:
+        conn.execute(
+            """
+            UPDATE erp_orders
+            SET payment_status = ?, status = ?, payment_txn_id = ?, payment_amount = ?,
+                currency = ?, payment_provider = COALESCE(?, payment_provider),
+                paid_at = ?, xpay_reference = COALESCE(?, xpay_reference), payment_payload = ?,
+                updated_at = ?
+            WHERE order_uid = ?
+            """,
+            (
+                payment_state,
+                order_state,
+                payment_txn_id or existing.get("payment_txn_id"),
+                final_amount,
+                final_currency,
+                str(payment_provider or existing.get("payment_provider") or "").strip() or None,
+                final_paid_at,
+                gateway_reference or None,
+                payload_text,
+                now,
+                order_uid,
+            ),
+        )
+        row = conn.execute("SELECT * FROM erp_orders WHERE order_uid = ? LIMIT 1", (order_uid,)).fetchone()
+    return serialize_order_row(row)
+
+
+def order_exists_by_xpay_reference(xpay_reference: str) -> bool:
+    if not xpay_reference:
+        return False
+    with get_erp_conn() as conn:
+        row = conn.execute("SELECT id FROM erp_orders WHERE xpay_reference = ? LIMIT 1", (xpay_reference,)).fetchone()
+    return row is not None
+
+
+def pick_value(item: Dict, *keys, default: str = "") -> str:
+    for key in keys:
+        if key in item and item.get(key) is not None:
+            text = str(item.get(key)).strip()
+            if text:
+                return text
+    return default
+
+
+def extract_orders_from_sync_payload(payload: Any) -> List[Dict]:
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ("orders", "manual_orders", "results", "data"):
+        candidate = payload.get(key)
+        if isinstance(candidate, list):
+            return [x for x in candidate if isinstance(x, dict)]
+        if isinstance(candidate, dict):
+            nested = extract_orders_from_sync_payload(candidate)
+            if nested:
+                return nested
+    return []
+
+
+def normalize_xpay_order(item: Dict) -> Dict:
+    order_type_raw = pick_value(item, "order_type", "type", "category", default="ecommerce").lower()
+    order_type = "puja" if "puja" in order_type_raw else "ecommerce"
+
+    payment_date = parse_date_input(
+        pick_value(item, "payment_date", "paid_on", "paid_at", "payment_timestamp", "created_at"),
+        fallback=today_iso(),
+    )
+    amount = parse_amount(pick_value(item, "amount", "amount_paid", "payment_amount", default="0"))
+    currency = parse_currency(pick_value(item, "currency", "currency_code", default=DEFAULT_CURRENCY))
+    xpay_reference = pick_value(item, "xpay_reference", "payment_id", "order_id", "id", "reference")
+
+    payload = {
+        "order_type": order_type,
+        "payment_provider": "xpay",
+        "customer_name": pick_value(item, "customer_name", "name", "user_name", default="Unknown Customer"),
+        "phone": pick_value(item, "phone", "phone_number", "mobile", default="NA"),
+        "email": pick_value(item, "email", "email_id", default="unknown@example.com"),
+        "payment_date": payment_date,
+        "amount": amount,
+        "currency": currency,
+        "payment_link": pick_value(item, "payment_link", "payment_url", "link"),
+        "notes": pick_value(item, "notes", "remark", "description"),
+        "status": pick_value(item, "status", default="pending"),
+        "payment_status": pick_value(item, "payment_status", "status", default="unpaid"),
+        "xpay_reference": xpay_reference,
+        "source": "xpay_sync",
+        "raw_payload": json.dumps(item, ensure_ascii=True),
+    }
+
+    if order_type == "puja":
+        payload["puja_name"] = pick_value(item, "puja_name", "service_name", "item_name", default="Puja")
+        payload["temple_name"] = pick_value(item, "temple_name", "location_name", default="Temple")
+        payload["puja_schedule_date"] = parse_date_input(
+            pick_value(item, "puja_schedule_date", "schedule_date", "event_date"),
+            fallback=payment_date,
+        )
+    else:
+        payload["address_line1"] = pick_value(item, "address_line1", "address", "shipping_address", default="NA")
+        payload["address_line2"] = pick_value(item, "address_line2")
+        payload["city"] = pick_value(item, "city", default="NA")
+        payload["state"] = pick_value(item, "state", default="NA")
+        payload["postal_code"] = pick_value(item, "postal_code", "pincode", "zip", default="NA")
+        payload["item_name"] = pick_value(item, "item_name", "product_name", "sku_name", default="Item")
+        payload["quantity"] = parse_positive_int(pick_value(item, "quantity", "qty", default="1"), fallback=1)
+    return payload
 
 
 def normalize_account_id(account_id: str) -> str:
@@ -1400,203 +2520,333 @@ def start_videos_job(values, req_files):
     return job_id
 
 
+init_erp_db()
+
+
 @app.route("/", methods=["GET"])
 def index():
-    return render_page(result=None)
+    return redirect(url_for("erp_dashboard"))
 
 
-@app.route("/upload/drive", methods=["POST"])
-def upload_from_drive():
-    values = parse_common_form_values(request)
-    try:
-        job_id = start_drive_job(values)
-        return redirect(url_for("job_status_page", job_id=job_id))
-    except Exception as exc:
-        result = {
-            "mode": "drive",
-            "ok": False,
-            "status": "failed",
-            "items": [],
-            "error": str(exc),
-        }
-        return render_page(result=result, form_values=values["form_values"])
-
-
-@app.route("/upload/images", methods=["POST"])
-def upload_manual_images():
-    values = parse_common_form_values(request)
-    try:
-        job_id = start_images_job(values, request.files)
-        return redirect(url_for("job_status_page", job_id=job_id))
-    except Exception as exc:
-        result = {
-            "mode": "images",
-            "ok": False,
-            "status": "failed",
-            "items": [],
-            "error": str(exc),
-        }
-        return render_page(result=result, form_values=values["form_values"])
-
-
-@app.route("/upload/videos", methods=["POST"])
-def upload_manual_videos():
-    values = parse_common_form_values(request)
-    try:
-        job_id = start_videos_job(values, request.files)
-        return redirect(url_for("job_status_page", job_id=job_id))
-    except Exception as exc:
-        result = {
-            "mode": "videos",
-            "ok": False,
-            "status": "failed",
-            "items": [],
-            "error": str(exc),
-        }
-        return render_page(result=result, form_values=values["form_values"])
-
-
-@app.route("/jobs/<job_id>", methods=["GET"])
-def job_status_page(job_id: str):
-    payload = load_job(job_id)
-    if not payload:
-        result = {
-            "mode": "unknown",
-            "ok": False,
-            "status": "failed",
-            "items": [],
-            "error": f"Job not found: {job_id}",
-        }
-        return render_page(result=result)
-    return render_page(result=format_job_state_for_api(payload), form_values=payload.get("form_values"))
-
-
-# Backward-compatible route aliases for previously shared URLs.
-@app.route("/upload/drive/status/<job_id>", methods=["GET"])
-def legacy_drive_status_page(job_id: str):
-    return redirect(url_for("job_status_page", job_id=job_id))
-
-
-@app.route("/api/upload/drive/start", methods=["POST"])
-def api_start_drive():
-    values = parse_common_form_values(request)
-    try:
-        job_id = start_drive_job(values)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-
-    return jsonify(
-        {
-            "ok": True,
-            "job_id": job_id,
-            "mode": "drive",
-            "status_url": url_for("job_status_page", job_id=job_id),
-            "poll_url": url_for("api_job_status", job_id=job_id),
-        }
+@app.route("/erp", methods=["GET"])
+def erp_dashboard():
+    app_meta = {
+        "version": APP_VERSION,
+        "boot_utc": APP_BOOT_UTC,
+    }
+    return render_template(
+        "erp.html",
+        app_meta=app_meta,
+        today=today_iso(),
+        orders=list_orders(limit=150),
+        backend_boot=get_backend_overview(),
+        supported_currencies=SUPPORTED_CURRENCIES,
+        default_currency=DEFAULT_CURRENCY,
     )
 
 
-@app.route("/api/upload/images/start", methods=["POST"])
-def api_start_images():
-    values = parse_common_form_values(request)
-    try:
-        job_id = start_images_job(values, request.files)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-
-    return jsonify(
-        {
-            "ok": True,
-            "job_id": job_id,
-            "mode": "images",
-            "status_url": url_for("job_status_page", job_id=job_id),
-            "poll_url": url_for("api_job_status", job_id=job_id),
-        }
-    )
-
-
-@app.route("/api/upload/videos/start", methods=["POST"])
-def api_start_videos():
-    values = parse_common_form_values(request)
-    try:
-        job_id = start_videos_job(values, request.files)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-
-    return jsonify(
-        {
-            "ok": True,
-            "job_id": job_id,
-            "mode": "videos",
-            "status_url": url_for("job_status_page", job_id=job_id),
-            "poll_url": url_for("api_job_status", job_id=job_id),
-        }
-    )
-
-
-@app.route("/api/token/validate", methods=["POST"])
-def api_validate_token():
-    ad_account_input = request.form.get("ad_account_id", "").strip() or DEFAULT_AD_ACCOUNT_ID
-    token = request.form.get("access_token", "").strip() or DEFAULT_ACCESS_TOKEN
-    account_id = normalize_account_id(ad_account_input)
-
-    if not account_id or not token:
-        return jsonify({"ok": False, "error": "Please provide ad account ID and access token."}), 400
-
-    try:
-        account = validate_token_and_account_access(account_id, token)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-
-    return jsonify({"ok": True, "account_id": account_id, "account": account})
-
-
-@app.route("/api/jobs/<job_id>", methods=["GET"])
-def api_job_status(job_id: str):
-    payload = load_job(job_id)
-    if not payload:
-        return jsonify({"ok": False, "error": f"Job not found: {job_id}"}), 404
-    return jsonify({"ok": True, "job": format_job_state_for_api(payload)})
-
-
-@app.route("/api/upload/drive/status/<job_id>", methods=["GET"])
-def legacy_api_drive_status(job_id: str):
-    return api_job_status(job_id)
-
-
-@app.route("/api/jobs/<job_id>/control", methods=["POST"])
-def api_job_control(job_id: str):
-    action = request.form.get("action")
+def read_request_payload() -> Dict:
     if request.is_json:
-        payload = request.get_json(silent=True) or {}
-        action = action or payload.get("action")
-    action = (action or "").strip().lower()
-    if action not in {"pause", "resume", "stop"}:
-        return jsonify({"ok": False, "error": "Invalid action. Use pause, resume, or stop."}), 400
-
-    payload = set_job_control(job_id, action)
-    if payload is None:
-        return jsonify({"ok": False, "error": f"Job not found: {job_id}"}), 404
-
-    return jsonify({"ok": True, "job": format_job_state_for_api(payload)})
+        return request.get_json(silent=True) or {}
+    return request.form.to_dict(flat=True)
 
 
-@app.route("/api/jobs/<job_id>/remove-file", methods=["POST"])
-def api_job_remove_file(job_id: str):
-    file_name = request.form.get("file")
-    if request.is_json:
-        payload = request.get_json(silent=True) or {}
-        file_name = file_name or payload.get("file")
-    file_name = (file_name or "").strip()
-    if not file_name:
-        return jsonify({"ok": False, "error": "Missing file name."}), 400
+@app.route("/api/erp/payment-link", methods=["POST"])
+def api_erp_payment_link():
+    payload = read_request_payload()
+    try:
+        amount = parse_amount(payload.get("amount"))
+        currency = parse_currency(payload.get("currency"), fallback=DEFAULT_CURRENCY)
+        order_type = str(payload.get("order_type") or "ecommerce").strip().lower()
+        if order_type not in {"puja", "ecommerce"}:
+            order_type = "ecommerce"
+        order_uid = str(payload.get("order_uid") or "").strip()
+        link_data = create_payment_link_details(
+            amount=amount,
+            order_type=order_type,
+            metadata={
+                "customer_name": str(payload.get("customer_name") or "").strip(),
+                "phone": str(payload.get("phone") or "").strip(),
+                "email": str(payload.get("email") or "").strip(),
+            },
+            order_uid=order_uid,
+            currency=currency,
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "payment_link": link_data["payment_link"],
+                "payment_provider": link_data.get("payment_provider"),
+                "gateway_reference": link_data.get("gateway_reference"),
+                "amount": amount,
+                "currency": currency,
+                "order_type": order_type,
+                "order_uid": order_uid,
+            }
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
-    ok, message = remove_job_file(job_id, file_name)
-    if not ok:
-        return jsonify({"ok": False, "error": message}), 400
 
-    payload = load_job(job_id)
-    return jsonify({"ok": True, "message": message, "job": format_job_state_for_api(payload)})
+@app.route("/api/erp/orders", methods=["GET"])
+def api_erp_list_orders():
+    try:
+        limit = int(request.args.get("limit", "100"))
+    except Exception:
+        limit = 100
+    order_type = request.args.get("order_type", "")
+    return jsonify({"ok": True, "orders": list_orders(limit=limit, order_type=order_type)})
+
+
+@app.route("/api/erp/backend/overview", methods=["GET"])
+def api_erp_backend_overview():
+    return jsonify({"ok": True, "backend": get_backend_overview()})
+
+
+@app.route("/api/erp/backend/orders/<order_uid>", methods=["GET"])
+def api_erp_backend_order(order_uid: str):
+    order = get_order_by_uid(order_uid)
+    if not order:
+        return jsonify({"ok": False, "error": f"Order not found: {order_uid}"}), 404
+    payloads = get_order_backend_payload(order_uid)
+    return jsonify({"ok": True, "order": order, "payloads": payloads})
+
+
+@app.route("/api/erp/orders", methods=["POST"])
+def api_erp_create_order():
+    payload = read_request_payload()
+    try:
+        order = create_order(payload)
+    except sqlite3.IntegrityError as exc:
+        return jsonify({"ok": False, "error": f"Duplicate order reference: {exc}"}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "order": order})
+
+
+@app.route("/api/erp/orders/<order_uid>/payment-link", methods=["POST"])
+def api_erp_update_payment_link(order_uid: str):
+    payload = read_request_payload()
+    amount = str(payload.get("amount") or "").strip()
+    currency = str(payload.get("currency") or "").strip()
+    try:
+        order = update_order_payment_link(order_uid=order_uid, amount=amount, currency=currency)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "order": order, "payment_link": order.get("payment_link")})
+
+
+@app.route("/api/erp/orders/<order_uid>/payment", methods=["POST"])
+def api_erp_record_order_payment(order_uid: str):
+    payload = read_request_payload()
+    status = pick_value(payload, "payment_status", "status", default="paid")
+    txn_id = pick_value(payload, "payment_txn_id", "payment_id", "transaction_id", "txn_id")
+    gateway_ref = pick_value(
+        payload,
+        "gateway_reference",
+        "xpay_reference",
+        "reference",
+        "payment_link_id",
+        "razorpay_payment_link_id",
+        "order_ref",
+    )
+    amount = pick_value(payload, "amount", "payment_amount")
+    currency = pick_value(payload, "currency", "currency_code")
+    paid_at = pick_value(payload, "paid_at", "payment_date", "payment_time")
+    payment_provider = pick_value(payload, "payment_provider", default=get_active_payment_provider())
+    try:
+        order = record_order_payment(
+            order_uid=order_uid,
+            gateway_reference=gateway_ref,
+            payment_provider=payment_provider,
+            payment_status=status,
+            payment_txn_id=txn_id,
+            amount=amount,
+            currency=currency,
+            paid_at=paid_at,
+            raw_payload=payload,
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "order": order})
+
+
+@app.route("/api/erp/xpay/webhook", methods=["POST"])
+@app.route("/api/xpay/webhook", methods=["POST"])
+def api_erp_xpay_webhook():
+    payload = read_request_payload()
+    order_uid = resolve_order_uid_from_payment(payload)
+    status = pick_value(payload, "payment_status", "status", "event", default="paid")
+    txn_id = pick_value(payload, "payment_txn_id", "payment_id", "transaction_id", "txn_id", "id")
+    gateway_ref = pick_value(payload, "xpay_reference", "reference", "payment_reference", "order_ref")
+    amount = pick_value(payload, "amount", "payment_amount", "paid_amount")
+    currency = pick_value(payload, "currency", "currency_code")
+    paid_at = pick_value(payload, "paid_at", "payment_date", "payment_time", "captured_at")
+
+    try:
+        order = record_order_payment(
+            order_uid=order_uid,
+            gateway_reference=gateway_ref,
+            payment_provider="xpay",
+            payment_status=status,
+            payment_txn_id=txn_id,
+            amount=amount,
+            currency=currency,
+            paid_at=paid_at,
+            raw_payload=payload,
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    return jsonify({"ok": True, "message": "Payment recorded.", "order_uid": order.get("order_uid")})
+
+
+@app.route("/api/erp/razorpay/webhook", methods=["POST"])
+def api_erp_razorpay_webhook():
+    raw_body = request.get_data(cache=True) or b""
+    signature = request.headers.get("X-Razorpay-Signature", "")
+    try:
+        verify_razorpay_webhook_signature(raw_body, signature)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    payload = request.get_json(silent=True) or {}
+    event = str(payload.get("event") or "").strip()
+    payload_root = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    payment_link_entity = (
+        ((payload_root.get("payment_link") or {}).get("entity"))
+        if isinstance(payload_root, dict)
+        else {}
+    )
+    payment_entity = (
+        ((payload_root.get("payment") or {}).get("entity"))
+        if isinstance(payload_root, dict)
+        else {}
+    )
+
+    order_uid = resolve_order_uid_from_payment(payload)
+    gateway_ref = pick_value(
+        payment_link_entity if isinstance(payment_link_entity, dict) else {},
+        "id",
+        default=pick_value(payload, "razorpay_payment_link_id", "payment_link_id"),
+    )
+    txn_id = pick_value(
+        payment_entity if isinstance(payment_entity, dict) else {},
+        "id",
+        default=pick_value(payload, "razorpay_payment_id", "payment_id"),
+    )
+    currency = pick_value(
+        payment_entity if isinstance(payment_entity, dict) else {},
+        "currency",
+        default=pick_value(payment_link_entity if isinstance(payment_link_entity, dict) else {}, "currency"),
+    )
+    amount_minor_units = pick_value(
+        payment_entity if isinstance(payment_entity, dict) else {},
+        "amount",
+        "amount_captured",
+        default=pick_value(payment_link_entity if isinstance(payment_link_entity, dict) else {}, "amount_paid", "amount"),
+    )
+    amount = minor_units_to_amount(amount_minor_units, parse_currency(currency or DEFAULT_CURRENCY))
+    paid_at = parse_unix_date(
+        pick_value(payment_entity if isinstance(payment_entity, dict) else {}, "captured_at", "created_at")
+        or pick_value(payload, "created_at")
+    )
+    status = pick_value(
+        payment_entity if isinstance(payment_entity, dict) else {},
+        "status",
+        default=event or pick_value(payment_link_entity if isinstance(payment_link_entity, dict) else {}, "status", default="paid"),
+    )
+
+    try:
+        order = record_order_payment(
+            order_uid=order_uid,
+            gateway_reference=gateway_ref,
+            payment_provider="razorpay",
+            payment_status=status or event or "paid",
+            payment_txn_id=txn_id,
+            amount=amount,
+            currency=currency,
+            paid_at=paid_at,
+            raw_payload=payload,
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    return jsonify({"ok": True, "message": "Razorpay payment recorded.", "order_uid": order.get("order_uid")})
+
+
+@app.route("/api/erp/xpay/sync", methods=["POST"])
+def api_erp_xpay_sync():
+    payload = read_request_payload()
+    api_url = str(payload.get("api_url") or XPAY_SYNC_API_URL or "").strip()
+    if not api_url:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "XPay API URL is not configured yet. Share the endpoint and key, then this sync can run.",
+                }
+            ),
+            400,
+        )
+
+    api_key = str(payload.get("api_key") or XPAY_API_KEY or "").strip()
+    method = str(payload.get("method") or "GET").strip().upper()
+    body = payload.get("body")
+
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        if method == "POST":
+            outbound = body if isinstance(body, dict) else {}
+            resp = requests.post(api_url, json=outbound, headers=headers, timeout=90)
+        else:
+            resp = requests.get(api_url, headers=headers, timeout=90)
+        resp_body = resp.json() if resp.text else {}
+        if resp.status_code >= 400:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": f"XPay sync call failed with HTTP {resp.status_code}.",
+                        "response": resp_body,
+                    }
+                ),
+                400,
+            )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"XPay sync request failed: {exc}"}), 400
+
+    items = extract_orders_from_sync_payload(resp_body)
+    created = 0
+    skipped = 0
+    errors: List[str] = []
+
+    for item in items:
+        try:
+            normalized = normalize_xpay_order(item)
+            xpay_reference = str(normalized.get("xpay_reference") or "").strip()
+            if xpay_reference and order_exists_by_xpay_reference(xpay_reference):
+                skipped += 1
+                continue
+            create_order(normalized)
+            created += 1
+        except Exception as exc:
+            skipped += 1
+            if len(errors) < 5:
+                errors.append(str(exc))
+
+    return jsonify(
+        {
+            "ok": True,
+            "fetched": len(items),
+            "created": created,
+            "skipped": skipped,
+            "errors": errors,
+        }
+    )
 
 
 if __name__ == "__main__":
