@@ -327,6 +327,7 @@ async function generatePaymentLink(e) {
       body: JSON.stringify(formData)
     });
     const saveResult = await saveRes.json();
+    console.log('[ERP] save response status:', saveRes.status, saveResult);
 
     if (!saveRes.ok) {
       showMsg(messageEl, saveResult.error || saveResult.message || 'Failed to save order', 'bad');
@@ -335,6 +336,8 @@ async function generatePaymentLink(e) {
 
     const order    = saveResult.order || {};
     const orderUid = order.order_uid || saveResult.order_uid || '';
+    console.log('[ERP] order.payment_link from save:', order.payment_link);
+    console.log('[ERP] order.payment_link_error:', order.payment_link_error);
 
     // Update order ID in header
     const idEl = form.querySelector('.order-id-value');
