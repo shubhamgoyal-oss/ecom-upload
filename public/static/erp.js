@@ -273,11 +273,9 @@ function initOrderInspector() {
 
 // ── FORM SUBMISSION ────────────────────────────────────────
 function initFormSubmission() {
+  // Prevent accidental form submit (Enter key etc.) — button handles everything
   document.querySelectorAll('.order-form').forEach(form => {
-    form.addEventListener('submit', function(e) {
-      e.preventDefault();
-      handleFormSubmit(this);
-    });
+    form.addEventListener('submit', e => e.preventDefault());
   });
 
   document.querySelectorAll('.generate-link').forEach(btn => {
@@ -285,90 +283,98 @@ function initFormSubmission() {
   });
 }
 
-async function handleFormSubmit(form) {
-  const submitBtn = form.querySelector('[type="submit"]');
-  const messageEl = form.querySelector('.message');
-  const origText  = submitBtn.textContent;
-
-  submitBtn.disabled    = true;
-  submitBtn.textContent = submitBtn.dataset.busyText || 'Saving…';
-
-  try {
-    const data = Object.fromEntries(new FormData(form));
-    const res  = await fetch('/api/erp/orders', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
-
-    const result = await res.json();
-
-    if (!res.ok) {
-      showMsg(messageEl, result.message || result.error || 'Error creating order', 'bad');
-      return;
-    }
-
-    showMsg(messageEl, `✅ Order ${result.order_uid} created!`, 'ok');
-    form.reset();
-    initCurrencyDropdowns();
-
-    // Refresh orders list
-    try {
-      const ordRes = await fetch('/api/erp/orders');
-      if (ordRes.ok) {
-        const ordData = await ordRes.json();
-        ORDERS = ordData.orders || [];
-        renderOrdersTable(ORDERS);
-        updateStats(ORDERS);
-      }
-    } catch(_) {}
-
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-
-  } catch(e) {
-    showMsg(messageEl, `Error: ${e.message}`, 'bad');
-  } finally {
-    submitBtn.disabled    = false;
-    submitBtn.textContent = origText;
-  }
-}
-
 async function generatePaymentLink(e) {
   e.preventDefault();
   const btn       = e.currentTarget;
   const form      = btn.closest('.order-form');
+  const messageEl = form.querySelector('.message');
   const linkInput = form.querySelector('[name="payment_link"]');
-  const origText  = btn.textContent;
+  const origHTML  = btn.innerHTML;
 
-  btn.disabled    = true;
-  btn.textContent = btn.dataset.busyText || 'Generating…';
+  // Native HTML5 validation
+  if (!form.checkValidity()) {
+    form.reportValidity();
+    return;
+  }
+
+  btn.disabled  = true;
+  btn.innerHTML = `<span style="opacity:.7">⏳</span> ${btn.dataset.busyText || 'Generating…'}`;
 
   try {
-    const payload = {
-      amount:         form.querySelector('[name="amount"]')?.value,
-      currency:       form.querySelector('[name="currency"]')?.value,
-      customer_name:  form.querySelector('[name="customer_name"]')?.value,
-      customer_email: form.querySelector('[name="email"]')?.value,
-    };
+    // ── Step 1: Save the order ─────────────────────────────
+    const formData = Object.fromEntries(new FormData(form));
+    formData.payment_link = ''; // will be filled next
 
-    const res    = await fetch('/api/erp/payment-link', {
+    const saveRes = await fetch('/api/erp/orders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(formData)
     });
-    const result = await res.json();
+    const saveResult = await saveRes.json();
 
-    if (!res.ok) {
-      alert(`Error: ${result.message || result.error || 'Failed to generate link'}`);
+    if (!saveRes.ok) {
+      showMsg(messageEl, saveResult.error || saveResult.message || 'Failed to save order', 'bad');
       return;
     }
 
-    linkInput.value = result.payment_link || result.link || '';
-  } catch(e) {
-    alert(`Error: ${e.message}`);
+    const order    = saveResult.order || {};
+    const orderUid = order.order_uid || saveResult.order_uid || '';
+
+    // Update order ID in header
+    const idEl = form.querySelector('.order-id-value');
+    if (idEl && orderUid) idEl.textContent = orderUid;
+
+    // ── Step 2: Generate payment link ─────────────────────
+    let paymentLink = '';
+
+    if (orderUid) {
+      const linkRes = await fetch(`/api/erp/orders/${encodeURIComponent(orderUid)}/payment-link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amount:   formData.amount,
+          currency: formData.currency
+        })
+      });
+      const linkResult = await linkRes.json();
+      paymentLink = linkResult.payment_link || linkResult.order?.payment_link || '';
+    }
+
+    // ── Step 3: Show result inline ─────────────────────────
+    if (linkInput) linkInput.value = paymentLink;
+
+    // Remove any old result bar
+    form.querySelector('.link-result-bar')?.remove();
+
+    if (paymentLink) {
+      const bar = document.createElement('div');
+      bar.className = 'link-result-bar';
+      bar.innerHTML = `
+        <span class="link-result-url" title="${esc(paymentLink)}">${esc(paymentLink)}</span>
+        <button type="button" class="copy-link-btn" data-url="${esc(paymentLink)}">📋 Copy</button>`;
+      bar.querySelector('.copy-link-btn').addEventListener('click', function() {
+        navigator.clipboard.writeText(this.dataset.url)
+          .then(() => { this.textContent = '✅ Copied!'; setTimeout(() => this.textContent = '📋 Copy', 2000); })
+          .catch(() => prompt('Copy this link:', this.dataset.url));
+      });
+      linkInput.closest('.form-group').after(bar);
+    }
+
+    const msg = paymentLink
+      ? `✅ Order ${orderUid} saved — payment link ready!`
+      : `✅ Order ${orderUid} saved (no payment link — check gateway config)`;
+    showMsg(messageEl, msg, 'ok');
+
+    // ── Step 4: Refresh orders list silently ──────────────
+    fetch('/api/erp/orders').then(r => r.ok ? r.json() : null).then(d => {
+      if (d) { ORDERS = d.orders || []; renderOrdersTable(ORDERS); updateStats(ORDERS); }
+    }).catch(() => {});
+
+  } catch(err) {
+    showMsg(messageEl, `Error: ${err.message}`, 'bad');
   } finally {
-    btn.disabled    = false;
-    btn.textContent = origText;
+    btn.disabled  = false;
+    btn.innerHTML = origHTML;
   }
 }
 

@@ -134,10 +134,7 @@
 
               <div class="form-group">
                 <label for="pujaPaymentLink">Payment Link</label>
-                <div class="input-with-button">
-                  <input id="pujaPaymentLink" name="payment_link" type="url" placeholder="Auto-generated or paste custom link">
-                  <button type="button" class="btn btn-secondary generate-link" data-busy-text="Generating...">Generate Link</button>
-                </div>
+                <input id="pujaPaymentLink" name="payment_link" type="url" placeholder="Auto-generated on click below" readonly>
               </div>
             </div>
 
@@ -150,10 +147,12 @@
               </div>
             </div>
 
-            <!-- Form Actions -->
-            <div class="form-actions">
-              <button type="submit" class="btn btn-primary btn-lg" data-action="save-order" data-busy-text="Saving...">💾 Save Puja Order</button>
-              <button type="reset" class="btn btn-outline">Clear Form</button>
+            <!-- Generate CTA -->
+            <div class="generate-cta">
+              <button type="button" class="btn btn-primary btn-generate generate-link" data-busy-text="Saving &amp; Generating…">
+                🔗 Generate Payment Link
+              </button>
+              <button type="reset" class="btn btn-ghost">Clear</button>
             </div>
             <p class="message" role="status" aria-live="polite"></p>
           </form>
@@ -255,10 +254,7 @@
 
               <div class="form-group">
                 <label for="ecomPaymentLink">Payment Link</label>
-                <div class="input-with-button">
-                  <input id="ecomPaymentLink" name="payment_link" type="url" placeholder="Auto-generated or paste custom link">
-                  <button type="button" class="btn btn-secondary generate-link" data-busy-text="Generating...">Generate Link</button>
-                </div>
+                <input id="ecomPaymentLink" name="payment_link" type="url" placeholder="Auto-generated on click below" readonly>
               </div>
             </div>
 
@@ -271,10 +267,12 @@
               </div>
             </div>
 
-            <!-- Form Actions -->
-            <div class="form-actions">
-              <button type="submit" class="btn btn-primary btn-lg" data-action="save-order" data-busy-text="Saving...">💾 Save E-commerce Order</button>
-              <button type="reset" class="btn btn-outline">Clear Form</button>
+            <!-- Generate CTA -->
+            <div class="generate-cta">
+              <button type="button" class="btn btn-primary btn-generate generate-link" data-busy-text="Saving &amp; Generating…">
+                🔗 Generate Payment Link
+              </button>
+              <button type="reset" class="btn btn-ghost">Clear</button>
             </div>
             <p class="message" role="status" aria-live="polite"></p>
           </form>

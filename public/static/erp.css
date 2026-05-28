@@ -499,6 +499,98 @@ input:focus, select:focus, textarea:focus {
 .btn-lg { height: 44px; padding: 0 22px; font-size: 14px; }
 .btn-sm { height: 32px; padding: 0 12px; font-size: 12px; }
 
+.btn-ghost {
+  background: transparent;
+  color: var(--text-3);
+  border-color: transparent;
+  font-size: 13px;
+  font-weight: 500;
+}
+.btn-ghost:hover:not(:disabled) {
+  color: var(--red);
+  background: var(--red-bg);
+}
+
+/* ── Generate Payment Link CTA ── */
+.generate-cta {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;
+  padding-top: 4px;
+}
+
+.btn-generate {
+  height: 56px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  border-radius: var(--r-md);
+  width: 100%;
+  box-shadow: 0 4px 16px rgba(99,102,241,.4);
+}
+
+.btn-generate:hover:not(:disabled) {
+  box-shadow: 0 6px 24px rgba(99,102,241,.5);
+  transform: translateY(-2px);
+}
+
+.btn-generate:active { transform: translateY(0); }
+
+.generate-cta .btn-ghost {
+  align-self: center;
+  height: 32px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+
+/* link result display */
+.link-result-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--green-bg);
+  border: 1.5px solid var(--green-border);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+  margin-top: 4px;
+}
+
+.link-result-url {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--green);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Courier New", monospace;
+}
+
+.copy-link-btn {
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1.5px solid var(--green-border);
+  background: var(--surface);
+  color: var(--green);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .12s;
+}
+.copy-link-btn:hover { background: var(--green); color: #fff; }
+
+/* readonly link input */
+input[readonly] {
+  background: var(--surface-soft);
+  color: var(--text-3);
+  cursor: default;
+}
+input[readonly]:focus { box-shadow: none; border-color: var(--border-strong); }
+
 .form-actions {
   display: flex;
   gap: 10px;
