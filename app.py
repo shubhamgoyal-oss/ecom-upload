@@ -62,15 +62,9 @@ def env_flag(name: str, default: str = "false") -> bool:
 IS_VERCEL = env_flag("VERCEL", "false") or bool(os.environ.get("VERCEL_ENV"))
 
 API_VERSION = "v25.0"
-DEFAULT_DRIVE_LINK = os.environ.get(
-    "DEFAULT_DRIVE_LINK",
-    "https://drive.google.com/drive/folders/1ALzsYnTy9v2i7VG-99xpgZ27bO26U-1b",
-)
-DEFAULT_AD_ACCOUNT_ID = os.environ.get("DEFAULT_AD_ACCOUNT_ID", "508817521835118")
-DEFAULT_ACCESS_TOKEN = os.environ.get(
-    "DEFAULT_ACCESS_TOKEN",
-    "***REMOVED***",
-)
+DEFAULT_DRIVE_LINK = os.environ.get("DEFAULT_DRIVE_LINK", "")
+DEFAULT_AD_ACCOUNT_ID = os.environ.get("DEFAULT_AD_ACCOUNT_ID", "")
+DEFAULT_ACCESS_TOKEN = os.environ.get("DEFAULT_ACCESS_TOKEN", "")
 DEFAULT_CAMPAIGN_REF = os.environ.get("DEFAULT_CAMPAIGN_REF", "")
 DEFAULT_ADSET_REF = os.environ.get("DEFAULT_ADSET_REF", "")
 DEFAULT_PAGE_ID = os.environ.get("DEFAULT_PAGE_ID", "")
