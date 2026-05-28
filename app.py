@@ -500,9 +500,11 @@ def build_razorpay_link_payload(
             "order_type": order_type,
         },
     }
+    # Only set callback_url if explicitly configured — otherwise Razorpay shows
+    # its own built-in payment success page, which is the cleanest UX.
     _redirect = PAYMENT_SUCCESS_URL or RAZORPAY_CALLBACK_URL
-    if _redirect:
-        payload["callback_url"] = _redirect
+    if _redirect and _redirect.strip():
+        payload["callback_url"] = _redirect.strip()
         payload["callback_method"] = "get"
     return payload
 
