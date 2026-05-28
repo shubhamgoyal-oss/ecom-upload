@@ -343,27 +343,12 @@ async function generatePaymentLink(e) {
     const idEl = form.querySelector('.order-id-value');
     if (idEl && orderUid) idEl.textContent = orderUid;
 
-    // ── Step 2: Use link from save response (already generated server-side)
-    //    Only call the payment-link endpoint if none came back with the order.
-    let paymentLink = order.payment_link || '';
-    let linkError   = order.payment_link_error || '';
-
-    if (orderUid && !paymentLink && !linkError) {
-      const linkRes    = await fetch(`/api/erp/orders/${encodeURIComponent(orderUid)}/payment-link`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          amount:   formData.amount,
-          currency: formData.currency
-        })
-      });
-      const linkResult = await linkRes.json();
-      if (!linkRes.ok) {
-        linkError = linkResult.error || linkResult.message || `Gateway error (HTTP ${linkRes.status})`;
-      } else {
-        paymentLink = linkResult.payment_link || linkResult.order?.payment_link || '';
-      }
-    }
+    // ── Step 2: Read link directly from save response ─────────
+    // The server generates the Razorpay link during order creation.
+    // We never call a second endpoint — that hits a different Vercel
+    // container which has no DB and always 404s the order.
+    const paymentLink = order.payment_link || saveResult.payment_link || '';
+    const linkError   = order.payment_link_error   || '';
 
     // ── Step 3: Show result inline ─────────────────────────
     if (linkInput) linkInput.value = paymentLink;

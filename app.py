@@ -977,7 +977,13 @@ def create_order(payload: Dict) -> Dict:
             ),
         )
         row = conn.execute("SELECT * FROM erp_orders WHERE order_uid = ?", (order_uid,)).fetchone()
-    result = serialize_order_row(row)
+
+    # Build result — override payment_link with the freshly generated value so
+    # it is always present even if the DB read returns a stale/empty value.
+    result = serialize_order_row(row) if row else {}
+    if payment_link:
+        result["payment_link"] = payment_link
+    result["order_uid"] = order_uid
     if payment_link_error:
         result["payment_link_error"] = payment_link_error
     return result
