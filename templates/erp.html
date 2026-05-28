@@ -82,11 +82,24 @@
                 </div>
                 <div class="form-group">
                   <label for="pujaPhone">Phone Number *</label>
-                  <input id="pujaPhone" name="phone" type="tel" placeholder="+91 XXXXX XXXXX" required>
+                  <div class="phone-field">
+                    <select class="country-code-select" name="phone_country_code">
+                      <option value="+91" selected>🇮🇳 +91</option>
+                      <option value="+1">🇺🇸 +1</option>
+                      <option value="+44">🇬🇧 +44</option>
+                      <option value="+971">🇦🇪 +971</option>
+                      <option value="+65">🇸🇬 +65</option>
+                      <option value="+61">🇦🇺 +61</option>
+                      <option value="+60">🇲🇾 +60</option>
+                      <option value="+49">🇩🇪 +49</option>
+                      <option value="+33">🇫🇷 +33</option>
+                    </select>
+                    <input id="pujaPhone" name="phone_number" type="tel" placeholder="98765 43210" required>
+                  </div>
                 </div>
                 <div class="form-group">
-                  <label for="pujaEmail">Email Address *</label>
-                  <input id="pujaEmail" name="email" type="email" placeholder="customer@example.com" required>
+                  <label for="pujaEmail">Email Address <span class="optional-tag">optional</span></label>
+                  <input id="pujaEmail" name="email" type="email" placeholder="customer@example.com">
                 </div>
               </div>
             </div>
@@ -179,11 +192,24 @@
                 </div>
                 <div class="form-group">
                   <label for="ecomPhone">Phone Number *</label>
-                  <input id="ecomPhone" name="phone" type="tel" placeholder="+91 XXXXX XXXXX" required>
+                  <div class="phone-field">
+                    <select class="country-code-select" name="phone_country_code">
+                      <option value="+91" selected>🇮🇳 +91</option>
+                      <option value="+1">🇺🇸 +1</option>
+                      <option value="+44">🇬🇧 +44</option>
+                      <option value="+971">🇦🇪 +971</option>
+                      <option value="+65">🇸🇬 +65</option>
+                      <option value="+61">🇦🇺 +61</option>
+                      <option value="+60">🇲🇾 +60</option>
+                      <option value="+49">🇩🇪 +49</option>
+                      <option value="+33">🇫🇷 +33</option>
+                    </select>
+                    <input id="ecomPhone" name="phone_number" type="tel" placeholder="98765 43210" required>
+                  </div>
                 </div>
                 <div class="form-group">
-                  <label for="ecomEmail">Email Address *</label>
-                  <input id="ecomEmail" name="email" type="email" placeholder="customer@example.com" required>
+                  <label for="ecomEmail">Email Address <span class="optional-tag">optional</span></label>
+                  <input id="ecomEmail" name="email" type="email" placeholder="customer@example.com">
                 </div>
               </div>
             </div>

@@ -94,6 +94,7 @@ RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "").strip()
 RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "").strip()
 RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "").strip()
 RAZORPAY_CALLBACK_URL = os.environ.get("RAZORPAY_CALLBACK_URL", "").strip()
+PAYMENT_SUCCESS_URL = os.environ.get("PAYMENT_SUCCESS_URL", "").strip()
 RAZORPAY_LINK_EXPIRY_HOURS = int(os.environ.get("RAZORPAY_LINK_EXPIRY_HOURS", "24"))
 RAZORPAY_NOTIFY_SMS = env_flag("RAZORPAY_NOTIFY_SMS", "true")
 RAZORPAY_NOTIFY_EMAIL = env_flag("RAZORPAY_NOTIFY_EMAIL", "true")
@@ -438,7 +439,7 @@ def build_xpay_link_payload(
     order_uid: str,
 ) -> Dict:
     customer_name = str((metadata or {}).get("customer_name") or "").strip() or "Customer"
-    customer_email = str((metadata or {}).get("email") or "").strip() or "customer@example.com"
+    customer_email = str((metadata or {}).get("email") or "").strip()
     customer_phone = normalize_contact_number(str((metadata or {}).get("phone") or "").strip())
 
     payload = {
@@ -450,7 +451,7 @@ def build_xpay_link_payload(
         },
         "expiryDate": int((time.time() + (XPAY_LINK_EXPIRY_HOURS * 3600)) * 1000),
         "receiptId": order_uid or uuid.uuid4().hex[:16],
-        "description": f"{order_type} order payment",
+        "description": str((metadata or {}).get("description") or f"{order_type} booking").strip(),
         "phoneNumberRequired": XPAY_PHONE_REQUIRED,
     }
     if customer_phone:
@@ -487,7 +488,7 @@ def build_razorpay_link_payload(
         "accept_partial": False,
         "expire_by": int(time.time()) + (RAZORPAY_LINK_EXPIRY_HOURS * 3600),
         "reference_id": (order_uid or uuid.uuid4().hex[:16])[:40],
-        "description": f"{order_type} order payment",
+        "description": str((metadata or {}).get("description") or f"{order_type} booking").strip(),
         "customer": customer_payload,
         "notify": {
             "sms": RAZORPAY_NOTIFY_SMS,
@@ -499,8 +500,9 @@ def build_razorpay_link_payload(
             "order_type": order_type,
         },
     }
-    if RAZORPAY_CALLBACK_URL:
-        payload["callback_url"] = RAZORPAY_CALLBACK_URL
+    _redirect = PAYMENT_SUCCESS_URL or RAZORPAY_CALLBACK_URL
+    if _redirect:
+        payload["callback_url"] = _redirect
         payload["callback_method"] = "get"
     return payload
 
@@ -836,8 +838,6 @@ def create_order(payload: Dict) -> Dict:
         raise ValueError("Customer name is required.")
     if not phone:
         raise ValueError("Phone number is required.")
-    if not email:
-        raise ValueError("Email ID is required.")
     if not payment_date:
         raise ValueError("Payment date is required.")
 
@@ -886,6 +886,10 @@ def create_order(payload: Dict) -> Dict:
     payment_provider = str(payload.get("payment_provider") or get_active_payment_provider()).strip().lower() or "manual"
     gateway_reference = str(payload.get("gateway_reference") or payload.get("xpay_reference") or "").strip() or None
     if not payment_link:
+        if order_type == "puja":
+            _description = f"Puja – {puja_name} at {temple_name}"
+        else:
+            _description = item_name or "E-commerce Order"
         link_data = create_payment_link_details(
             amount=amount,
             order_type=order_type,
@@ -893,6 +897,7 @@ def create_order(payload: Dict) -> Dict:
                 "customer_name": customer_name,
                 "phone": phone,
                 "email": email,
+                "description": _description,
             },
             order_uid=order_uid,
             currency=currency,
@@ -1077,13 +1082,19 @@ def update_order_payment_link(order_uid: str, amount: str = "", currency: str = 
 
     final_amount = parse_amount(amount or existing.get("amount"))
     final_currency = parse_currency(currency or existing.get("currency"), fallback=DEFAULT_CURRENCY)
+    _otype = existing.get("order_type") or "ecommerce"
+    if _otype == "puja":
+        _desc = f"Puja – {existing.get('puja_name') or ''} at {existing.get('temple_name') or ''}"
+    else:
+        _desc = existing.get("item_name") or "E-commerce Order"
     link_data = create_payment_link_details(
         amount=final_amount,
-        order_type=existing.get("order_type") or "ecommerce",
+        order_type=_otype,
         metadata={
             "customer_name": existing.get("customer_name") or "",
             "phone": existing.get("phone") or "",
             "email": existing.get("email") or "",
+            "description": _desc,
         },
         order_uid=order_uid,
         currency=final_currency,

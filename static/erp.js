@@ -37,8 +37,16 @@ function initSidebar() {
       const target = document.getElementById(sectionId);
       if (target) target.classList.add('active');
 
-      if (sectionId === 'orders')    renderOrdersTable(ORDERS);
-      if (sectionId === 'analytics') updateStats(ORDERS);
+      if (sectionId === 'orders') {
+        fetch('/api/erp/orders').then(r => r.ok ? r.json() : null).then(d => {
+          if (d) { ORDERS = d.orders || []; renderOrdersTable(ORDERS); }
+        }).catch(() => renderOrdersTable(ORDERS));
+      }
+      if (sectionId === 'analytics') {
+        fetch('/api/erp/orders').then(r => r.ok ? r.json() : null).then(d => {
+          if (d) { ORDERS = d.orders || []; updateStats(ORDERS); }
+        }).catch(() => updateStats(ORDERS));
+      }
     });
   });
 }
@@ -304,6 +312,14 @@ async function generatePaymentLink(e) {
     // ── Step 1: Save the order ─────────────────────────────
     const formData = Object.fromEntries(new FormData(form));
     formData.payment_link = ''; // will be filled next
+    // Combine country code + phone number into single phone field
+    if (formData.phone_country_code && formData.phone_number) {
+      formData.phone = formData.phone_country_code + formData.phone_number.replace(/\D/g, '');
+    } else if (formData.phone_number) {
+      formData.phone = formData.phone_number;
+    }
+    delete formData.phone_country_code;
+    delete formData.phone_number;
 
     const saveRes = await fetch('/api/erp/orders', {
       method: 'POST',

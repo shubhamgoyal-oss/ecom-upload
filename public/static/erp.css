@@ -1109,6 +1109,41 @@ input[readonly]:focus { box-shadow: none; border-color: var(--border-strong); }
   .section-header h2 { font-size: 18px; }
 }
 
+/* ── PHONE FIELD WITH COUNTRY CODE ───────────────────────── */
+.phone-field {
+  display: flex;
+  gap: 8px;
+}
+
+.country-code-select {
+  width: 110px;
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.phone-field input {
+  flex: 1;
+}
+
+/* optional label tag */
+.optional-tag {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-4);
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
+@media (max-width: 480px) {
+  .country-code-select { width: 90px; font-size: 12px; }
+}
+
 @media (max-width: 480px) {
   .main-content { padding: 12px; }
   .stats-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
