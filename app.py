@@ -111,6 +111,9 @@ XPAY_PRIVATE_KEY = (
     or os.environ.get("XPAY_SECRET_KEY", "").strip()
 )
 XPAY_CALLBACK_URL = os.environ.get("XPAY_CALLBACK_URL", "").strip()
+# Optional shared token to protect ERP routes. Set ERP_ACCESS_TOKEN in env vars.
+# If unset, routes remain open (backward compat with existing deployments).
+ERP_ACCESS_TOKEN = os.environ.get("ERP_ACCESS_TOKEN", "").strip()
 XPAY_CANCEL_URL = os.environ.get("XPAY_CANCEL_URL", "").strip()
 XPAY_LINK_EXPIRY_HOURS = int(os.environ.get("XPAY_LINK_EXPIRY_HOURS", "24"))
 XPAY_PHONE_REQUIRED = env_flag("XPAY_PHONE_REQUIRED", "false")
@@ -569,6 +572,8 @@ def parse_unix_date(raw_value: Any, fallback: str = "") -> str:
 
 
 def verify_razorpay_webhook_signature(raw_body: bytes, signature: str) -> None:
+    # If no secret is configured, skip verification but still process the event.
+    # To harden: set RAZORPAY_WEBHOOK_SECRET in your environment variables.
     if not RAZORPAY_WEBHOOK_SECRET:
         return
     expected = hmac.new(
@@ -578,6 +583,26 @@ def verify_razorpay_webhook_signature(raw_body: bytes, signature: str) -> None:
     ).hexdigest()
     if not hmac.compare_digest(expected, str(signature or "").strip()):
         raise ValueError("Razorpay webhook signature verification failed.")
+
+
+def check_erp_auth() -> bool:
+    """Return True if the request is authorised to access ERP routes.
+    Accepts the token as:  Authorization: Bearer <token>  OR  ?token=<token>
+    If ERP_ACCESS_TOKEN is not set, all requests are allowed (open mode).
+    """
+    if not ERP_ACCESS_TOKEN:
+        return True
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return hmac.compare_digest(auth_header[7:].strip(), ERP_ACCESS_TOKEN)
+    token_param = request.args.get("token", "") or request.form.get("token", "")
+    if token_param:
+        return hmac.compare_digest(token_param.strip(), ERP_ACCESS_TOKEN)
+    # For the browser dashboard, allow if a valid session cookie is present
+    cookie_token = request.cookies.get("erp_token", "")
+    if cookie_token:
+        return hmac.compare_digest(cookie_token.strip(), ERP_ACCESS_TOKEN)
+    return False
 
 
 def parse_positive_int(raw_value: Any, fallback: int = 1) -> int:
@@ -2551,6 +2576,8 @@ def index():
 
 @app.route("/erp", methods=["GET"])
 def erp_dashboard():
+    if not check_erp_auth():
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
     app_meta = {
         "version": APP_VERSION,
         "boot_utc": APP_BOOT_UTC,
@@ -2559,7 +2586,7 @@ def erp_dashboard():
         "erp.html",
         app_meta=app_meta,
         today=today_iso(),
-        orders=list_orders(limit=150),
+        orders=list_orders(limit=50),        # limit PII exposure in HTML
         backend_boot=get_backend_overview(),
         supported_currencies=SUPPORTED_CURRENCIES,
         default_currency=DEFAULT_CURRENCY,
@@ -2611,6 +2638,8 @@ def api_erp_payment_link():
 
 @app.route("/api/erp/orders", methods=["GET"])
 def api_erp_list_orders():
+    if not check_erp_auth():
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
     try:
         limit = int(request.args.get("limit", "100"))
     except Exception:
@@ -2621,11 +2650,15 @@ def api_erp_list_orders():
 
 @app.route("/api/erp/backend/overview", methods=["GET"])
 def api_erp_backend_overview():
+    if not check_erp_auth():
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
     return jsonify({"ok": True, "backend": get_backend_overview()})
 
 
 @app.route("/api/erp/backend/orders/<order_uid>", methods=["GET"])
 def api_erp_backend_order(order_uid: str):
+    if not check_erp_auth():
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
     order = get_order_by_uid(order_uid)
     if not order:
         return jsonify({"ok": False, "error": f"Order not found: {order_uid}"}), 404
@@ -2635,6 +2668,8 @@ def api_erp_backend_order(order_uid: str):
 
 @app.route("/api/erp/orders", methods=["POST"])
 def api_erp_create_order():
+    if not check_erp_auth():
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
     payload = read_request_payload()
     try:
         order = create_order(payload)
@@ -2647,6 +2682,8 @@ def api_erp_create_order():
 
 @app.route("/api/erp/orders/<order_uid>/payment-link", methods=["POST"])
 def api_erp_update_payment_link(order_uid: str):
+    if not check_erp_auth():
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
     payload = read_request_payload()
     amount = str(payload.get("amount") or "").strip()
     currency = str(payload.get("currency") or "").strip()
@@ -2799,7 +2836,9 @@ def api_erp_razorpay_webhook():
 @app.route("/api/erp/xpay/sync", methods=["POST"])
 def api_erp_xpay_sync():
     payload = read_request_payload()
-    api_url = str(payload.get("api_url") or XPAY_SYNC_API_URL or "").strip()
+    # Only use the server-configured URL — never accept api_url from the request
+    # body (prevents SSRF).
+    api_url = XPAY_SYNC_API_URL
     if not api_url:
         return (
             jsonify(
