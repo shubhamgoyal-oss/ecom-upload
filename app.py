@@ -14,13 +14,14 @@ from base64 import b64encode
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from functools import wraps
 from typing import Any, Dict, List
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import gdown
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.utils import secure_filename
 
 
@@ -53,6 +54,9 @@ app = Flask(
     template_folder="templates",
 )
 app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024 * 1024
+# Secret key is loaded from env after env vars are read (see below); set here
+# as a temporary fallback so Flask doesn't error on import.
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "") or os.urandom(32)
 
 
 def env_flag(name: str, default: str = "false") -> bool:
@@ -114,6 +118,14 @@ XPAY_CALLBACK_URL = os.environ.get("XPAY_CALLBACK_URL", "").strip()
 # Optional shared token to protect ERP routes. Set ERP_ACCESS_TOKEN in env vars.
 # If unset, routes remain open (backward compat with existing deployments).
 ERP_ACCESS_TOKEN = os.environ.get("ERP_ACCESS_TOKEN", "").strip()
+
+# Google OAuth — set GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET in Vercel env vars.
+# When configured, /erp requires sign-in with an @ALLOWED_EMAIL_DOMAIN account.
+GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+ALLOWED_EMAIL_DOMAIN = os.environ.get("ALLOWED_EMAIL_DOMAIN", "appsforbharat.com").strip()
+# MUST be set to a long random string in Vercel for sessions to survive cold-starts.
+FLASK_SECRET_KEY     = os.environ.get("FLASK_SECRET_KEY", "").strip()
 XPAY_CANCEL_URL = os.environ.get("XPAY_CANCEL_URL", "").strip()
 XPAY_LINK_EXPIRY_HOURS = int(os.environ.get("XPAY_LINK_EXPIRY_HOURS", "24"))
 XPAY_PHONE_REQUIRED = env_flag("XPAY_PHONE_REQUIRED", "false")
@@ -587,22 +599,55 @@ def verify_razorpay_webhook_signature(raw_body: bytes, signature: str) -> None:
 
 def check_erp_auth() -> bool:
     """Return True if the request is authorised to access ERP routes.
-    Accepts the token as:  Authorization: Bearer <token>  OR  ?token=<token>
-    If ERP_ACCESS_TOKEN is not set, all requests are allowed (open mode).
+
+    Priority:
+      1. Google OAuth session (if GOOGLE_CLIENT_ID is configured)
+      2. ERP_ACCESS_TOKEN Bearer header / query param (API / script access)
+      3. Open access (if neither is configured — backward compat)
     """
-    if not ERP_ACCESS_TOKEN:
-        return True
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        return hmac.compare_digest(auth_header[7:].strip(), ERP_ACCESS_TOKEN)
-    token_param = request.args.get("token", "") or request.form.get("token", "")
-    if token_param:
-        return hmac.compare_digest(token_param.strip(), ERP_ACCESS_TOKEN)
-    # For the browser dashboard, allow if a valid session cookie is present
-    cookie_token = request.cookies.get("erp_token", "")
-    if cookie_token:
-        return hmac.compare_digest(cookie_token.strip(), ERP_ACCESS_TOKEN)
-    return False
+    # 1. Google OAuth session
+    if GOOGLE_CLIENT_ID:
+        return bool(session.get("user_email"))
+
+    # 2. Static token (for API / curl access)
+    if ERP_ACCESS_TOKEN:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            return hmac.compare_digest(auth_header[7:].strip(), ERP_ACCESS_TOKEN)
+        token_param = request.args.get("token", "") or request.form.get("token", "")
+        if token_param:
+            return hmac.compare_digest(token_param.strip(), ERP_ACCESS_TOKEN)
+        return False
+
+    # 3. Open (no auth configured)
+    return True
+
+
+def login_required(f):
+    """Decorator: redirect browser to /auth/login, return 401 for API calls."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if check_erp_auth():
+            return f(*args, **kwargs)
+        if request.path.startswith("/api/"):
+            return jsonify({"ok": False, "error": "Unauthorized. Please log in."}), 401
+        return redirect(url_for("auth_login", next=request.url))
+    return decorated
+
+
+# ── Google OAuth helpers ───────────────────────────────────────────────────────
+
+GOOGLE_AUTH_URL     = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL    = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
+
+
+def google_oauth_redirect_uri() -> str:
+    """Build the absolute callback URL, forcing https on Vercel."""
+    base = request.url_root.rstrip("/")
+    if IS_VERCEL and base.startswith("http://"):
+        base = "https://" + base[7:]
+    return base + "/auth/callback"
 
 
 def parse_positive_int(raw_value: Any, fallback: int = 1) -> int:
@@ -2568,6 +2613,93 @@ def start_videos_job(values, req_files):
 
 init_erp_db()
 
+# Apply stable secret key after env vars have been loaded
+if FLASK_SECRET_KEY:
+    app.secret_key = FLASK_SECRET_KEY
+
+
+# ── Auth routes ────────────────────────────────────────────────────────────────
+
+@app.route("/auth/login")
+def auth_login():
+    if not GOOGLE_CLIENT_ID:
+        # OAuth not configured — go straight to ERP
+        return redirect(url_for("erp_dashboard"))
+
+    state = os.urandom(16).hex()
+    session["oauth_state"] = state
+    session["oauth_next"]  = request.args.get("next", url_for("erp_dashboard"))
+
+    params = {
+        "client_id":     GOOGLE_CLIENT_ID,
+        "redirect_uri":  google_oauth_redirect_uri(),
+        "scope":         "openid email profile",
+        "response_type": "code",
+        "state":         state,
+        "hd":            ALLOWED_EMAIL_DOMAIN,   # pre-filter to workspace domain
+        "prompt":        "select_account",
+    }
+    return redirect(GOOGLE_AUTH_URL + "?" + urlencode(params))
+
+
+@app.route("/auth/callback")
+def auth_callback():
+    error = request.args.get("error")
+    if error:
+        return render_template("login.html", error=f"Google sign-in cancelled: {error}"), 403
+
+    # Verify CSRF state
+    returned_state = request.args.get("state", "")
+    stored_state   = session.pop("oauth_state", None)
+    if not stored_state or not hmac.compare_digest(returned_state, stored_state):
+        return render_template("login.html", error="Invalid OAuth state. Please try again."), 400
+
+    code         = request.args.get("code", "")
+    redirect_uri = google_oauth_redirect_uri()
+
+    # Exchange code for tokens
+    try:
+        token_resp = requests.post(GOOGLE_TOKEN_URL, data={
+            "code":          code,
+            "client_id":     GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri":  redirect_uri,
+            "grant_type":    "authorization_code",
+        }, timeout=15)
+        token_data   = token_resp.json()
+        access_token = token_data.get("access_token", "")
+        if not access_token:
+            raise ValueError(token_data.get("error_description") or "No access token returned")
+
+        userinfo_resp = requests.get(GOOGLE_USERINFO_URL,
+            headers={"Authorization": f"Bearer {access_token}"}, timeout=15)
+        userinfo = userinfo_resp.json()
+    except Exception as exc:
+        return render_template("login.html", error=f"Authentication error: {exc}"), 500
+
+    email = userinfo.get("email", "")
+    if not email.lower().endswith(f"@{ALLOWED_EMAIL_DOMAIN.lower()}"):
+        return render_template(
+            "login.html",
+            error=f"Access denied. Only @{ALLOWED_EMAIL_DOMAIN} accounts are allowed."
+        ), 403
+
+    session["user_email"]   = email
+    session["user_name"]    = userinfo.get("name", email)
+    session["user_picture"] = userinfo.get("picture", "")
+    session.permanent       = True
+
+    next_url = session.pop("oauth_next", url_for("erp_dashboard"))
+    return redirect(next_url)
+
+
+@app.route("/auth/logout")
+def auth_logout():
+    session.clear()
+    return redirect(url_for("auth_login"))
+
+
+# ── App routes ─────────────────────────────────────────────────────────────────
 
 @app.route("/", methods=["GET"])
 def index():
@@ -2575,9 +2707,8 @@ def index():
 
 
 @app.route("/erp", methods=["GET"])
+@login_required
 def erp_dashboard():
-    if not check_erp_auth():
-        return jsonify({"ok": False, "error": "Unauthorized"}), 401
     app_meta = {
         "version": APP_VERSION,
         "boot_utc": APP_BOOT_UTC,
@@ -2586,10 +2717,15 @@ def erp_dashboard():
         "erp.html",
         app_meta=app_meta,
         today=today_iso(),
-        orders=list_orders(limit=50),        # limit PII exposure in HTML
+        orders=list_orders(limit=50),
         backend_boot=get_backend_overview(),
         supported_currencies=SUPPORTED_CURRENCIES,
         default_currency=DEFAULT_CURRENCY,
+        current_user={
+            "email":   session.get("user_email", ""),
+            "name":    session.get("user_name", ""),
+            "picture": session.get("user_picture", ""),
+        },
     )
 
 
@@ -2637,9 +2773,8 @@ def api_erp_payment_link():
 
 
 @app.route("/api/erp/orders", methods=["GET"])
+@login_required
 def api_erp_list_orders():
-    if not check_erp_auth():
-        return jsonify({"ok": False, "error": "Unauthorized"}), 401
     try:
         limit = int(request.args.get("limit", "100"))
     except Exception:
@@ -2649,16 +2784,14 @@ def api_erp_list_orders():
 
 
 @app.route("/api/erp/backend/overview", methods=["GET"])
+@login_required
 def api_erp_backend_overview():
-    if not check_erp_auth():
-        return jsonify({"ok": False, "error": "Unauthorized"}), 401
     return jsonify({"ok": True, "backend": get_backend_overview()})
 
 
 @app.route("/api/erp/backend/orders/<order_uid>", methods=["GET"])
+@login_required
 def api_erp_backend_order(order_uid: str):
-    if not check_erp_auth():
-        return jsonify({"ok": False, "error": "Unauthorized"}), 401
     order = get_order_by_uid(order_uid)
     if not order:
         return jsonify({"ok": False, "error": f"Order not found: {order_uid}"}), 404
@@ -2667,9 +2800,8 @@ def api_erp_backend_order(order_uid: str):
 
 
 @app.route("/api/erp/orders", methods=["POST"])
+@login_required
 def api_erp_create_order():
-    if not check_erp_auth():
-        return jsonify({"ok": False, "error": "Unauthorized"}), 401
     payload = read_request_payload()
     try:
         order = create_order(payload)
@@ -2681,9 +2813,8 @@ def api_erp_create_order():
 
 
 @app.route("/api/erp/orders/<order_uid>/payment-link", methods=["POST"])
+@login_required
 def api_erp_update_payment_link(order_uid: str):
-    if not check_erp_auth():
-        return jsonify({"ok": False, "error": "Unauthorized"}), 401
     payload = read_request_payload()
     amount = str(payload.get("amount") or "").strip()
     currency = str(payload.get("currency") or "").strip()

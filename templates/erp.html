@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>App Store Bharat ERP</title>
-  <link rel="stylesheet" href="/static/erp.css?v=20260528b">
+  <link rel="stylesheet" href="/static/erp.css?v=20260529">
 </head>
 <body>
   <div class="erp-layout">
@@ -34,6 +34,20 @@
       </nav>
 
       <div class="sidebar-footer">
+        {% if current_user and current_user.email %}
+        <div class="user-info">
+          {% if current_user.picture %}
+          <img class="user-avatar" src="{{ current_user.picture }}" alt="{{ current_user.name }}" referrerpolicy="no-referrer">
+          {% else %}
+          <div class="user-avatar-placeholder">{{ current_user.name[:1] | upper }}</div>
+          {% endif %}
+          <div class="user-details">
+            <span class="user-name">{{ current_user.name }}</span>
+            <span class="user-email">{{ current_user.email }}</span>
+          </div>
+          <a href="/auth/logout" class="logout-btn" title="Sign out">↩</a>
+        </div>
+        {% endif %}
         <div class="version-info">
           <small>v{{ app_meta.version }}</small>
           <small>{{ app_meta.boot_utc }}</small>
@@ -489,6 +503,6 @@
   <script id="ordersBoot" type="application/json">{{ orders | tojson }}</script>
   <script id="backendBoot" type="application/json">{{ backend_boot | tojson }}</script>
   <script id="appConfig" type="application/json">{"supported_currencies": {{ supported_currencies | tojson }}, "default_currency": {{ default_currency | tojson }}}</script>
-  <script src="/static/erp.js?v=20260528b"></script>
+  <script src="/static/erp.js?v=20260529"></script>
 </body>
 </html>
