@@ -116,6 +116,12 @@ XPAY_PRIVATE_KEY = (
 )
 XPAY_CALLBACK_URL = os.environ.get("XPAY_CALLBACK_URL", "").strip()
 
+# ── Turso (persistent cloud SQLite) ───────────────────────────────────────────
+# Set TURSO_DATABASE_URL + TURSO_AUTH_TOKEN in Vercel to enable.
+# Falls back to local /tmp SQLite when unset (dev / non-Vercel).
+TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "").strip()  # https://xxx.turso.io
+TURSO_AUTH_TOKEN   = os.environ.get("TURSO_AUTH_TOKEN",   "").strip()
+
 # ── Email notifications via Resend ─────────────────────────────────────────────
 # Set RESEND_API_KEY in Vercel env vars (get it from resend.com).
 # RESEND_FROM must be a verified sender domain, e.g. "ERP <erp@appsforbharat.com>".
@@ -282,7 +288,128 @@ def today_iso() -> str:
     return datetime.now().date().isoformat()
 
 
+# ── Turso HTTP connection wrapper ─────────────────────────────────────────────
+
+def _turso_val(v: Any) -> Dict:
+    """Convert a Python value to a Turso-typed arg object."""
+    if v is None:
+        return {"type": "null"}
+    if isinstance(v, bool):
+        return {"type": "integer", "value": "1" if v else "0"}
+    if isinstance(v, int):
+        return {"type": "integer", "value": str(v)}
+    if isinstance(v, float):
+        return {"type": "float", "value": repr(v)}
+    if isinstance(v, bytes):
+        from base64 import b64encode
+        return {"type": "blob", "base64": b64encode(v).decode()}
+    return {"type": "text", "value": str(v)}
+
+
+def _from_turso_val(v: Dict) -> Any:
+    """Convert a Turso-typed value object back to Python."""
+    t = v.get("type")
+    if t == "null" or v is None:
+        return None
+    if t == "integer":
+        return int(v["value"])
+    if t == "float":
+        return float(v["value"])
+    if t == "blob":
+        from base64 import b64decode
+        return b64decode(v.get("base64", v.get("value", "")))
+    return v.get("value")  # text
+
+
+class _TursoRow(dict):
+    """Dict subclass that also supports integer indexing, like sqlite3.Row."""
+    _keys: List[str]
+
+    def __init__(self, keys: List[str], values: List[Any]):
+        super().__init__(zip(keys, values))
+        object.__setattr__(self, "_keys", keys)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return list(self.values())[key]
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):          # type: ignore[override]
+        return super().get(key, default)
+
+    def keys(self):                            # type: ignore[override]
+        return object.__getattribute__(self, "_keys")
+
+
+class _TursoCursor:
+    def __init__(self, cols: List[str], raw_rows: List[List]):
+        self._rows = [_TursoRow(cols, r) for r in raw_rows]
+        self._pos  = 0
+
+    def fetchone(self) -> Any:
+        if self._pos >= len(self._rows):
+            return None
+        row = self._rows[self._pos]
+        self._pos += 1
+        return row
+
+    def fetchall(self) -> List:
+        result    = self._rows[self._pos:]
+        self._pos = len(self._rows)
+        return result
+
+
+class _TursoConn:
+    """Thin wrapper around the Turso HTTP v2/pipeline API, mimics sqlite3."""
+
+    def __init__(self, url: str, auth_token: str):
+        base = url.rstrip("/")
+        # Accept both libsql:// and https:// URLs
+        if base.startswith("libsql://"):
+            base = "https://" + base[9:]
+        self._endpoint  = base + "/v2/pipeline"
+        self._auth_token = auth_token
+
+    def _post(self, stmts: List[Dict]) -> List[Dict]:
+        resp = requests.post(
+            self._endpoint,
+            headers={
+                "Authorization": f"Bearer {self._auth_token}",
+                "Content-Type":  "application/json",
+            },
+            json={"requests": stmts},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json().get("results", [])
+
+    def execute(self, sql: str, params=()) -> _TursoCursor:
+        stmt   = {"type": "execute", "stmt": {
+            "sql":  sql,
+            "args": [_turso_val(p) for p in params],
+        }}
+        result = self._post([stmt])[0]
+        if result.get("type") == "error":
+            raise RuntimeError(result["error"]["message"])
+        data = result["response"]["result"]
+        cols = [c["name"] for c in data.get("cols", [])]
+        rows = [
+            [_from_turso_val(cell) for cell in row]
+            for row in data.get("rows", [])
+        ]
+        return _TursoCursor(cols, rows)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, *_):
+        pass   # Turso auto-commits every statement
+
+
 def get_erp_conn():
+    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+        return _TursoConn(TURSO_DATABASE_URL, TURSO_AUTH_TOKEN)
+    # Local SQLite fallback (dev / non-Vercel)
     ERP_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(ERP_DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
@@ -333,7 +460,10 @@ def init_erp_db():
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_erp_orders_created_at ON erp_orders(created_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_erp_orders_type ON erp_orders(order_type)")
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_erp_orders_xpay_ref ON erp_orders(xpay_reference)")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_erp_orders_xpay_ref "
+            "ON erp_orders(xpay_reference) WHERE xpay_reference IS NOT NULL"
+        )
 
         # Lightweight schema migration for existing local DBs.
         existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(erp_orders)").fetchall()}
