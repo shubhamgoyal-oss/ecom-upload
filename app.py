@@ -14,6 +14,9 @@ from base64 import b64encode
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from functools import wraps
 from typing import Any, Dict, List
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
@@ -115,6 +118,22 @@ XPAY_PRIVATE_KEY = (
     or os.environ.get("XPAY_SECRET_KEY", "").strip()
 )
 XPAY_CALLBACK_URL = os.environ.get("XPAY_CALLBACK_URL", "").strip()
+
+# ── Email notifications ────────────────────────────────────────────────────────
+# Sent to NOTIFICATION_EMAILS on every successful payment.
+# Use Gmail: SMTP_HOST=smtp.gmail.com, SMTP_PORT=587, SMTP_PASSWORD=app-password
+SMTP_HOST   = os.environ.get("SMTP_HOST", "smtp.gmail.com").strip()
+SMTP_PORT   = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER   = os.environ.get("SMTP_USER", "").strip()   # your Gmail address
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "").strip()
+NOTIFICATION_EMAILS = [
+    e.strip() for e in
+    os.environ.get(
+        "NOTIFICATION_EMAILS",
+        "chitra@appsforbharat.com,shubham.goyal@appsforbharat.com"
+    ).split(",") if e.strip()
+]
+
 # Optional shared token to protect ERP routes. Set ERP_ACCESS_TOKEN in env vars.
 # If unset, routes remain open (backward compat with existing deployments).
 ERP_ACCESS_TOKEN = os.environ.get("ERP_ACCESS_TOKEN", "").strip()
@@ -595,6 +614,80 @@ def verify_razorpay_webhook_signature(raw_body: bytes, signature: str) -> None:
     ).hexdigest()
     if not hmac.compare_digest(expected, str(signature or "").strip()):
         raise ValueError("Razorpay webhook signature verification failed.")
+
+
+def send_payment_notification_email(order: Dict) -> None:
+    """Send an internal email alert when a payment is marked as paid."""
+    if not SMTP_USER or not SMTP_PASSWORD:
+        return  # SMTP not configured — skip silently
+    if not NOTIFICATION_EMAILS:
+        return
+
+    uid          = order.get("order_uid", "—")
+    customer     = order.get("customer_name", "—")
+    phone        = order.get("phone", "—")
+    email_addr   = order.get("email", "")
+    amount       = order.get("payment_amount") or order.get("amount") or "—"
+    currency     = order.get("currency", "INR")
+    order_type   = (order.get("order_type") or "").capitalize()
+    service      = order.get("puja_name") or order.get("item_name") or "—"
+    paid_at      = order.get("paid_at") or order.get("updated_at", "")[:10]
+    txn_id       = order.get("payment_txn_id") or "—"
+    provider     = (order.get("payment_provider") or "—").capitalize()
+
+    try:
+        amount_fmt = f"{currency} {float(amount):,.2f}"
+    except Exception:
+        amount_fmt = f"{currency} {amount}"
+
+    subject = f"✅ Payment Received — {uid} | {customer} | {amount_fmt}"
+
+    html_body = f"""
+    <html><body style="font-family:sans-serif;color:#1e293b;max-width:600px;">
+      <div style="background:#6366f1;color:#fff;padding:20px 24px;border-radius:10px 10px 0 0;">
+        <h2 style="margin:0">💰 Payment Confirmed</h2>
+        <p style="margin:4px 0 0;opacity:.85">App Store Bharat ERP</p>
+      </div>
+      <div style="border:1px solid #e2e8f0;border-top:none;padding:24px;border-radius:0 0 10px 10px;">
+        <table style="width:100%;border-collapse:collapse;">
+          <tr><td style="padding:8px 0;color:#64748b;width:140px">Order ID</td><td><strong>{uid}</strong></td></tr>
+          <tr><td style="padding:8px 0;color:#64748b">Customer</td><td>{customer}</td></tr>
+          <tr><td style="padding:8px 0;color:#64748b">Phone</td><td>{phone}</td></tr>
+          {"<tr><td style='padding:8px 0;color:#64748b'>Email</td><td>" + email_addr + "</td></tr>" if email_addr else ""}
+          <tr><td style="padding:8px 0;color:#64748b">Order Type</td><td>{order_type}</td></tr>
+          <tr><td style="padding:8px 0;color:#64748b">Service / Item</td><td>{service}</td></tr>
+          <tr style="background:#f0fdf4"><td style="padding:10px 0;color:#15803d;font-weight:700">Amount Paid</td>
+              <td style="color:#15803d;font-weight:700;font-size:18px">{amount_fmt}</td></tr>
+          <tr><td style="padding:8px 0;color:#64748b">Gateway</td><td>{provider}</td></tr>
+          <tr><td style="padding:8px 0;color:#64748b">Txn ID</td><td><code>{txn_id}</code></td></tr>
+          <tr><td style="padding:8px 0;color:#64748b">Paid On</td><td>{paid_at}</td></tr>
+        </table>
+      </div>
+    </body></html>
+    """
+
+    plain_body = (
+        f"Payment Confirmed\n\n"
+        f"Order ID : {uid}\nCustomer : {customer}\nPhone    : {phone}\n"
+        f"Type     : {order_type}\nService  : {service}\n"
+        f"Amount   : {amount_fmt}\nGateway  : {provider}\n"
+        f"Txn ID   : {txn_id}\nPaid On  : {paid_at}\n"
+    )
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = f"ASB ERP <{SMTP_USER}>"
+        msg["To"]      = ", ".join(NOTIFICATION_EMAILS)
+        msg.attach(MIMEText(plain_body, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(SMTP_USER, NOTIFICATION_EMAILS, msg.as_string())
+    except Exception:
+        pass   # never let email failure break the payment record flow
 
 
 def check_erp_auth() -> bool:
@@ -1313,7 +1406,13 @@ def record_order_payment(
             ),
         )
         row = conn.execute("SELECT * FROM erp_orders WHERE order_uid = ? LIMIT 1", (order_uid,)).fetchone()
-    return serialize_order_row(row)
+    result = serialize_order_row(row)
+    if payment_state == "paid":
+        try:
+            send_payment_notification_email(result)
+        except Exception:
+            pass
+    return result
 
 
 def order_exists_by_xpay_reference(xpay_reference: str) -> bool:
@@ -2762,6 +2861,48 @@ def api_erp_payment_link():
         )
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.route("/api/erp/analytics", methods=["GET"])
+@login_required
+def api_erp_analytics():
+    """Return aggregated stats + recent paid transactions for the analytics tab."""
+    with get_erp_conn() as conn:
+        rows = conn.execute("SELECT * FROM erp_orders ORDER BY id DESC LIMIT 500").fetchall()
+
+    orders = [serialize_order_row(r) for r in rows]
+    paid   = [o for o in orders if o.get("payment_status") == "paid"]
+
+    def safe_float(v):
+        try:
+            return float(v or 0)
+        except Exception:
+            return 0.0
+
+    total_revenue    = sum(safe_float(o.get("payment_amount") or o.get("amount")) for o in paid)
+    puja_revenue     = sum(safe_float(o.get("payment_amount") or o.get("amount")) for o in paid if o.get("order_type") == "puja")
+    ecom_revenue     = sum(safe_float(o.get("payment_amount") or o.get("amount")) for o in paid if o.get("order_type") == "ecommerce")
+    puja_count       = sum(1 for o in orders if o.get("order_type") == "puja")
+    ecom_count       = sum(1 for o in orders if o.get("order_type") == "ecommerce")
+
+    recent_paid = sorted(paid, key=lambda o: o.get("paid_at") or o.get("updated_at") or "", reverse=True)[:20]
+
+    return jsonify({
+        "ok": True,
+        "stats": {
+            "total_orders":  len(orders),
+            "paid_orders":   len(paid),
+            "unpaid_orders": sum(1 for o in orders if o.get("payment_status") == "unpaid"),
+            "pending_orders":sum(1 for o in orders if o.get("payment_status") == "pending"),
+            "total_revenue": round(total_revenue, 2),
+            "puja_revenue":  round(puja_revenue, 2),
+            "ecom_revenue":  round(ecom_revenue, 2),
+            "puja_orders":   puja_count,
+            "ecom_orders":   ecom_count,
+            "currency":      DEFAULT_CURRENCY,
+        },
+        "recent_paid": recent_paid,
+    })
 
 
 @app.route("/api/erp/orders", methods=["GET"])

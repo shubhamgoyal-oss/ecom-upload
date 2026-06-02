@@ -43,9 +43,7 @@ function initSidebar() {
         }).catch(() => renderOrdersTable(ORDERS));
       }
       if (sectionId === 'analytics') {
-        fetch('/api/erp/orders').then(r => r.ok ? r.json() : null).then(d => {
-          if (d) { ORDERS = d.orders || []; updateStats(ORDERS); }
-        }).catch(() => updateStats(ORDERS));
+        loadAnalytics();
       }
     });
   });
@@ -227,6 +225,52 @@ function updateStats(orders) {
 function setText(id, val) {
   const el = document.getElementById(id);
   if (el) el.textContent = val;
+}
+
+// ── ANALYTICS ──────────────────────────────────────────────
+async function loadAnalytics() {
+  try {
+    const res  = await fetch('/api/erp/analytics');
+    if (!res.ok) return;
+    const data = await res.json();
+    const s    = data.stats || {};
+    const cur  = s.currency || 'INR';
+
+    const fmt = (n) => `${cur} ${parseFloat(n || 0).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+
+    setText('statTotal',       s.total_orders   ?? '—');
+    setText('statPaid',        s.paid_orders    ?? '—');
+    setText('statUnpaid',      s.unpaid_orders  ?? '—');
+    setText('statPending',     s.pending_orders ?? '—');
+    setText('statRevenue',     fmt(s.total_revenue));
+    setText('statPujaRevenue', fmt(s.puja_revenue));
+    setText('statEcomRevenue', fmt(s.ecom_revenue));
+    setText('statSplit',       `🙏 ${s.puja_orders ?? 0}  /  🛒 ${s.ecom_orders ?? 0}`);
+
+    // Recent paid transactions table
+    const tbody = document.getElementById('paidTransactionsBody');
+    const paid  = data.recent_paid || [];
+    if (!tbody) return;
+
+    if (!paid.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:24px">No successful transactions yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = paid.map(o => {
+      const amt    = parseFloat(o.payment_amount || o.amount || 0);
+      const amtFmt = `${o.currency || cur} ${amt.toLocaleString('en-IN', {minimumFractionDigits: 2})}`;
+      const service = esc(o.puja_name || o.item_name || '—');
+      const date    = (o.paid_at || o.updated_at || '').slice(0, 10) || '—';
+      return `<tr>
+        <td><span class="order-uid-cell">${esc(o.order_uid)}</span></td>
+        <td><div class="customer-cell"><div class="name">${esc(o.customer_name || '—')}</div><div class="phone">${esc(o.phone || '')}</div></div></td>
+        <td>${service}</td>
+        <td class="amount-cell" style="color:#16a34a;font-weight:600">${amtFmt}</td>
+        <td>${esc((o.payment_provider || '—').replace(/^\w/, c => c.toUpperCase()))}</td>
+        <td>${date}</td>
+      </tr>`;
+    }).join('');
+  } catch(_) {}
 }
 
 // ── BACKEND INFO ───────────────────────────────────────────

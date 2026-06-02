@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>App Store Bharat ERP</title>
-  <link rel="stylesheet" href="/static/erp.css?v=20260529">
+  <link rel="stylesheet" href="/static/erp.css?v=20260530">
 </head>
 <body>
   <div class="erp-layout">
@@ -410,6 +410,60 @@
           </div>
         </div>
 
+        <!-- Revenue Stats -->
+        <div class="stats-grid" style="margin-top:12px">
+          <div class="stat-card" style="background:linear-gradient(135deg,#0f766e,#0d9488)">
+            <div class="stat-icon">💰</div>
+            <div class="stat-content">
+              <p class="stat-label" style="color:rgba(255,255,255,.75)">Total Revenue</p>
+              <p class="stat-value" id="statRevenue" style="color:#fff">—</p>
+            </div>
+          </div>
+          <div class="stat-card" style="background:linear-gradient(135deg,#7c3aed,#9333ea)">
+            <div class="stat-icon">🙏</div>
+            <div class="stat-content">
+              <p class="stat-label" style="color:rgba(255,255,255,.75)">Puja Revenue</p>
+              <p class="stat-value" id="statPujaRevenue" style="color:#fff">—</p>
+            </div>
+          </div>
+          <div class="stat-card" style="background:linear-gradient(135deg,#b45309,#d97706)">
+            <div class="stat-icon">🛒</div>
+            <div class="stat-content">
+              <p class="stat-label" style="color:rgba(255,255,255,.75)">Ecom Revenue</p>
+              <p class="stat-value" id="statEcomRevenue" style="color:#fff">—</p>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon">📦</div>
+            <div class="stat-content">
+              <p class="stat-label">Puja / Ecom Split</p>
+              <p class="stat-value" id="statSplit" style="font-size:1.1rem">—</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recent Successful Transactions -->
+        <div class="inspector-panel" style="margin-top:24px">
+          <h3>💸 Recent Successful Transactions</h3>
+          <div style="overflow-x:auto;margin-top:12px">
+            <table class="orders-table" id="paidTransactionsTable">
+              <thead>
+                <tr>
+                  <th>Order ID</th>
+                  <th>Customer</th>
+                  <th>Service / Item</th>
+                  <th>Amount</th>
+                  <th>Gateway</th>
+                  <th>Paid On</th>
+                </tr>
+              </thead>
+              <tbody id="paidTransactionsBody">
+                <tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:24px">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <!-- Payment Gateway Info -->
         <div class="info-grid">
           <div class="info-card">
@@ -503,6 +557,6 @@
   <script id="ordersBoot" type="application/json">{{ orders | tojson }}</script>
   <script id="backendBoot" type="application/json">{{ backend_boot | tojson }}</script>
   <script id="appConfig" type="application/json">{"supported_currencies": {{ supported_currencies | tojson }}, "default_currency": {{ default_currency | tojson }}}</script>
-  <script src="/static/erp.js?v=20260529"></script>
+  <script src="/static/erp.js?v=20260530"></script>
 </body>
 </html>
