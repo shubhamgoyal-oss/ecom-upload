@@ -14,9 +14,6 @@ from base64 import b64encode
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from functools import wraps
 from typing import Any, Dict, List
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
@@ -119,13 +116,11 @@ XPAY_PRIVATE_KEY = (
 )
 XPAY_CALLBACK_URL = os.environ.get("XPAY_CALLBACK_URL", "").strip()
 
-# ── Email notifications ────────────────────────────────────────────────────────
-# Sent to NOTIFICATION_EMAILS on every successful payment.
-# Use Gmail: SMTP_HOST=smtp.gmail.com, SMTP_PORT=587, SMTP_PASSWORD=app-password
-SMTP_HOST   = os.environ.get("SMTP_HOST", "smtp.gmail.com").strip()
-SMTP_PORT   = int(os.environ.get("SMTP_PORT", "587"))
-SMTP_USER   = os.environ.get("SMTP_USER", "").strip()   # your Gmail address
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "").strip()
+# ── Email notifications via Resend ─────────────────────────────────────────────
+# Set RESEND_API_KEY in Vercel env vars (get it from resend.com).
+# RESEND_FROM must be a verified sender domain, e.g. "ERP <erp@appsforbharat.com>".
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
+RESEND_FROM    = os.environ.get("RESEND_FROM", "ASB ERP <onboarding@resend.dev>").strip()
 NOTIFICATION_EMAILS = [
     e.strip() for e in
     os.environ.get(
@@ -617,23 +612,21 @@ def verify_razorpay_webhook_signature(raw_body: bytes, signature: str) -> None:
 
 
 def send_payment_notification_email(order: Dict) -> None:
-    """Send an internal email alert when a payment is marked as paid."""
-    if not SMTP_USER or not SMTP_PASSWORD:
-        return  # SMTP not configured — skip silently
-    if not NOTIFICATION_EMAILS:
-        return
+    """Send an internal email alert via Resend when a payment is marked as paid."""
+    if not RESEND_API_KEY or not NOTIFICATION_EMAILS:
+        return  # Resend not configured — skip silently
 
-    uid          = order.get("order_uid", "—")
-    customer     = order.get("customer_name", "—")
-    phone        = order.get("phone", "—")
-    email_addr   = order.get("email", "")
-    amount       = order.get("payment_amount") or order.get("amount") or "—"
-    currency     = order.get("currency", "INR")
-    order_type   = (order.get("order_type") or "").capitalize()
-    service      = order.get("puja_name") or order.get("item_name") or "—"
-    paid_at      = order.get("paid_at") or order.get("updated_at", "")[:10]
-    txn_id       = order.get("payment_txn_id") or "—"
-    provider     = (order.get("payment_provider") or "—").capitalize()
+    uid        = order.get("order_uid", "—")
+    customer   = order.get("customer_name", "—")
+    phone      = order.get("phone", "—")
+    email_addr = order.get("email", "")
+    amount     = order.get("payment_amount") or order.get("amount") or "—"
+    currency   = order.get("currency", "INR")
+    order_type = (order.get("order_type") or "").capitalize()
+    service    = order.get("puja_name") or order.get("item_name") or "—"
+    paid_at    = order.get("paid_at") or (order.get("updated_at") or "")[:10]
+    txn_id     = order.get("payment_txn_id") or "—"
+    provider   = (order.get("payment_provider") or "—").capitalize()
 
     try:
         amount_fmt = f"{currency} {float(amount):,.2f}"
@@ -643,51 +636,55 @@ def send_payment_notification_email(order: Dict) -> None:
     subject = f"✅ Payment Received — {uid} | {customer} | {amount_fmt}"
 
     html_body = f"""
-    <html><body style="font-family:sans-serif;color:#1e293b;max-width:600px;">
+    <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                       color:#1e293b;max-width:600px;margin:0 auto;">
       <div style="background:#6366f1;color:#fff;padding:20px 24px;border-radius:10px 10px 0 0;">
-        <h2 style="margin:0">💰 Payment Confirmed</h2>
-        <p style="margin:4px 0 0;opacity:.85">App Store Bharat ERP</p>
+        <h2 style="margin:0;font-size:20px">💰 Payment Confirmed</h2>
+        <p style="margin:4px 0 0;opacity:.8;font-size:13px">App Store Bharat ERP</p>
       </div>
-      <div style="border:1px solid #e2e8f0;border-top:none;padding:24px;border-radius:0 0 10px 10px;">
-        <table style="width:100%;border-collapse:collapse;">
-          <tr><td style="padding:8px 0;color:#64748b;width:140px">Order ID</td><td><strong>{uid}</strong></td></tr>
+      <div style="border:1px solid #e2e8f0;border-top:none;padding:24px;
+                  border-radius:0 0 10px 10px;background:#fff;">
+        <table style="width:100%;border-collapse:collapse;font-size:14px;">
+          <tr><td style="padding:8px 0;color:#64748b;width:130px;vertical-align:top">Order ID</td>
+              <td><strong style="font-family:monospace">{uid}</strong></td></tr>
           <tr><td style="padding:8px 0;color:#64748b">Customer</td><td>{customer}</td></tr>
           <tr><td style="padding:8px 0;color:#64748b">Phone</td><td>{phone}</td></tr>
           {"<tr><td style='padding:8px 0;color:#64748b'>Email</td><td>" + email_addr + "</td></tr>" if email_addr else ""}
           <tr><td style="padding:8px 0;color:#64748b">Order Type</td><td>{order_type}</td></tr>
           <tr><td style="padding:8px 0;color:#64748b">Service / Item</td><td>{service}</td></tr>
-          <tr style="background:#f0fdf4"><td style="padding:10px 0;color:#15803d;font-weight:700">Amount Paid</td>
-              <td style="color:#15803d;font-weight:700;font-size:18px">{amount_fmt}</td></tr>
+          <tr style="background:#f0fdf4;border-radius:6px;">
+            <td style="padding:12px 8px;color:#15803d;font-weight:700">Amount Paid</td>
+            <td style="color:#15803d;font-weight:700;font-size:20px">{amount_fmt}</td>
+          </tr>
           <tr><td style="padding:8px 0;color:#64748b">Gateway</td><td>{provider}</td></tr>
-          <tr><td style="padding:8px 0;color:#64748b">Txn ID</td><td><code>{txn_id}</code></td></tr>
+          <tr><td style="padding:8px 0;color:#64748b">Txn ID</td>
+              <td><code style="background:#f1f5f9;padding:2px 6px;border-radius:4px;font-size:12px">{txn_id}</code></td></tr>
           <tr><td style="padding:8px 0;color:#64748b">Paid On</td><td>{paid_at}</td></tr>
         </table>
       </div>
+      <p style="color:#94a3b8;font-size:11px;text-align:center;margin-top:16px">
+        App Store Bharat ERP &nbsp;·&nbsp; automated notification
+      </p>
     </body></html>
     """
 
-    plain_body = (
-        f"Payment Confirmed\n\n"
-        f"Order ID : {uid}\nCustomer : {customer}\nPhone    : {phone}\n"
-        f"Type     : {order_type}\nService  : {service}\n"
-        f"Amount   : {amount_fmt}\nGateway  : {provider}\n"
-        f"Txn ID   : {txn_id}\nPaid On  : {paid_at}\n"
-    )
-
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"]    = f"ASB ERP <{SMTP_USER}>"
-        msg["To"]      = ", ".join(NOTIFICATION_EMAILS)
-        msg.attach(MIMEText(plain_body, "plain"))
-        msg.attach(MIMEText(html_body, "html"))
-
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SMTP_USER, NOTIFICATION_EMAILS, msg.as_string())
+        requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type":  "application/json",
+            },
+            json={
+                "from":    RESEND_FROM,
+                "to":      NOTIFICATION_EMAILS,
+                "subject": subject,
+                "html":    html_body,
+            },
+            timeout=15,
+        )
     except Exception:
-        pass   # never let email failure break the payment record flow
+        pass  # never let email failure break the payment record flow
 
 
 def check_erp_auth() -> bool:
