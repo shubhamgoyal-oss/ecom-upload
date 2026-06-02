@@ -3099,6 +3099,247 @@ def api_erp_razorpay_webhook():
     return jsonify({"ok": True, "message": "Razorpay payment recorded.", "order_uid": order.get("order_uid")})
 
 
+RAZORPAY_STATUS_MAP = {
+    "paid":            "paid",
+    "partially_paid":  "pending",
+    "created":         "unpaid",
+    "cancelled":       "unpaid",
+    "expired":         "unpaid",
+}
+
+
+def _razorpay_headers() -> Dict:
+    auth = build_razorpay_basic_authorization()
+    if not auth:
+        raise RuntimeError("Razorpay keys not configured (RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET).")
+    return {"Authorization": auth, "Content-Type": "application/json"}
+
+
+def _fetch_all_razorpay_links() -> List[Dict]:
+    """Page through GET /v1/payment_links and return every link."""
+    base    = RAZORPAY_API_BASE_URL.rstrip("/")
+    headers = _razorpay_headers()
+    items   = []
+    skip    = 0
+    count   = 100   # Razorpay max per page
+
+    while True:
+        resp = requests.get(
+            f"{base}/payment_links",
+            headers=headers,
+            params={"count": count, "skip": skip},
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Razorpay API error {resp.status_code}: {extract_error_message(resp.json())}")
+        body  = resp.json()
+        batch = body.get("items") or []
+        items.extend(batch)
+        if len(batch) < count:
+            break
+        skip += count
+
+    return items
+
+
+@app.route("/api/erp/razorpay/backfill", methods=["POST"])
+@login_required
+def api_erp_razorpay_backfill():
+    """
+    1. Pull ALL payment links from Razorpay.
+    2. Upsert an order record for each (skip if order_uid already exists).
+    3. Return counts: created / updated / skipped.
+    """
+    try:
+        links = _fetch_all_razorpay_links()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    created = updated = skipped = 0
+    now = utc_now_iso()
+
+    with get_erp_conn() as conn:
+        for link in links:
+            # Map Razorpay fields → our schema
+            gateway_ref  = link.get("id", "")
+            reference_id = (link.get("reference_id") or "").strip()
+            order_uid    = reference_id or gateway_ref[:40]
+
+            rzp_status    = str(link.get("status") or "created").lower()
+            payment_state = RAZORPAY_STATUS_MAP.get(rzp_status, "unpaid")
+
+            amount_minor  = link.get("amount") or 0
+            amount_paid   = link.get("amount_paid") or 0
+            currency      = link.get("currency") or DEFAULT_CURRENCY
+            try:
+                amount_dec     = str(Decimal(amount_minor) / 100)
+                amount_paid_dec = str(Decimal(amount_paid) / 100)
+            except Exception:
+                amount_dec = amount_paid_dec = "0"
+
+            customer  = link.get("customer") or {}
+            cust_name = str(customer.get("name") or "").strip() or "Unknown"
+            cust_phone = normalize_contact_number(str(customer.get("contact") or "").strip())
+            cust_email = str(customer.get("email") or "").strip()
+
+            short_url    = link.get("short_url") or ""
+            description  = str(link.get("description") or "").strip()
+            created_at_ts = link.get("created_at")
+            try:
+                created_iso = datetime.fromtimestamp(int(created_at_ts), tz=timezone.utc).date().isoformat() if created_at_ts else now[:10]
+            except Exception:
+                created_iso = now[:10]
+
+            existing = conn.execute(
+                "SELECT id, payment_status FROM erp_orders WHERE order_uid = ? LIMIT 1",
+                (order_uid,),
+            ).fetchone()
+
+            if existing:
+                # Only update status + payment info; don't overwrite customer data
+                conn.execute(
+                    """
+                    UPDATE erp_orders
+                    SET payment_status = ?, payment_link = COALESCE(NULLIF(payment_link,''), ?),
+                        xpay_reference = COALESCE(NULLIF(xpay_reference,''), ?),
+                        payment_amount = ?, updated_at = ?
+                    WHERE order_uid = ?
+                    """,
+                    (payment_state, short_url, gateway_ref, amount_paid_dec, now, order_uid),
+                )
+                updated += 1
+            else:
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO erp_orders (
+                            order_uid, order_type, payment_provider, customer_name, phone, email,
+                            payment_date, order_date, amount, currency, payment_link, status,
+                            payment_status, payment_amount, xpay_reference, notes,
+                            raw_payload, source, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            order_uid, "ecommerce", "razorpay",
+                            cust_name, cust_phone, cust_email,
+                            created_iso, created_iso,
+                            amount_dec, currency, short_url,
+                            "paid" if payment_state == "paid" else "pending",
+                            payment_state,
+                            amount_paid_dec if payment_state == "paid" else None,
+                            gateway_ref,
+                            description or None,
+                            json.dumps(link, ensure_ascii=True),
+                            "razorpay_backfill",
+                            now, now,
+                        ),
+                    )
+                    created += 1
+                except sqlite3.IntegrityError:
+                    skipped += 1
+
+    return jsonify({
+        "ok": True,
+        "message": f"Backfill complete: {created} created, {updated} updated, {skipped} skipped.",
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "total_links": len(links),
+    })
+
+
+@app.route("/api/erp/razorpay/sync-status", methods=["POST"])
+@login_required
+def api_erp_razorpay_sync_status():
+    """
+    For every order in the DB that has a Razorpay gateway reference,
+    fetch its current status from Razorpay and update payment_status.
+    """
+    try:
+        headers = _razorpay_headers()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    base = RAZORPAY_API_BASE_URL.rstrip("/")
+    now  = utc_now_iso()
+
+    with get_erp_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT order_uid, xpay_reference, payment_link
+            FROM erp_orders
+            WHERE payment_provider = 'razorpay'
+               OR xpay_reference LIKE 'plink_%'
+            ORDER BY id DESC LIMIT 500
+            """
+        ).fetchall()
+
+    synced = failed = unchanged = 0
+    errors = []
+
+    for row in rows:
+        order_uid   = row["order_uid"]
+        gateway_ref = row["xpay_reference"] or ""
+
+        if not gateway_ref.startswith("plink_"):
+            unchanged += 1
+            continue
+
+        try:
+            resp = requests.get(
+                f"{base}/payment_links/{gateway_ref}",
+                headers=headers,
+                timeout=15,
+            )
+            if resp.status_code == 404:
+                unchanged += 1
+                continue
+            if resp.status_code >= 400:
+                raise RuntimeError(extract_error_message(resp.json()))
+
+            link_data     = resp.json()
+            rzp_status    = str(link_data.get("status") or "created").lower()
+            payment_state = RAZORPAY_STATUS_MAP.get(rzp_status, "unpaid")
+            amount_paid   = link_data.get("amount_paid") or 0
+            try:
+                amount_paid_dec = str(Decimal(amount_paid) / 100)
+            except Exception:
+                amount_paid_dec = None
+
+            with get_erp_conn() as conn:
+                conn.execute(
+                    """
+                    UPDATE erp_orders
+                    SET payment_status = ?,
+                        status = ?,
+                        payment_amount = CASE WHEN ? > 0 THEN ? ELSE payment_amount END,
+                        updated_at = ?
+                    WHERE order_uid = ?
+                    """,
+                    (
+                        payment_state,
+                        "paid" if payment_state == "paid" else "pending",
+                        amount_paid,
+                        amount_paid_dec,
+                        now,
+                        order_uid,
+                    ),
+                )
+            synced += 1
+        except Exception as exc:
+            failed += 1
+            errors.append(f"{order_uid}: {exc}")
+
+    return jsonify({
+        "ok":        True,
+        "message":   f"Sync complete: {synced} updated, {unchanged} skipped, {failed} failed.",
+        "synced":    synced,
+        "unchanged": unchanged,
+        "failed":    failed,
+        "errors":    errors[:10],
+    })
+
+
 @app.route("/api/erp/xpay/sync", methods=["POST"])
 def api_erp_xpay_sync():
     payload = read_request_payload()

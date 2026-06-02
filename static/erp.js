@@ -19,6 +19,7 @@ document.addEventListener('DOMContentLoaded', function() {
   initOrdersRefresh();
   initOrderInspector();
   initFormSubmission();
+  initBackfillButtons();
   renderOrdersTable(ORDERS);
   updateStats(ORDERS);
   updateBackendInfo();
@@ -225,6 +226,43 @@ function updateStats(orders) {
 function setText(id, val) {
   const el = document.getElementById(id);
   if (el) el.textContent = val;
+}
+
+// ── BACKFILL ────────────────────────────────────────────────
+function initBackfillButtons() {
+  const msg = document.getElementById('backfillMsg');
+
+  async function runAction(btn, url, label) {
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ Running…';
+    if (msg) msg.textContent = '';
+    try {
+      const res  = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      const data = await res.json();
+      if (msg) {
+        msg.textContent = data.message || (data.ok ? '✅ Done' : `❌ ${data.error}`);
+        msg.style.color = data.ok ? '#16a34a' : '#dc2626';
+      }
+      if (data.ok) loadAnalytics();   // refresh tables
+    } catch(e) {
+      if (msg) { msg.textContent = `❌ ${e.message}`; msg.style.color = '#dc2626'; }
+    } finally {
+      btn.disabled = false;
+      btn.textContent = orig;
+    }
+  }
+
+  const btnBackfill   = document.getElementById('btnBackfill');
+  const btnSyncStatus = document.getElementById('btnSyncStatus');
+
+  if (btnBackfill)
+    btnBackfill.addEventListener('click', () =>
+      runAction(btnBackfill, '/api/erp/razorpay/backfill', 'Import'));
+
+  if (btnSyncStatus)
+    btnSyncStatus.addEventListener('click', () =>
+      runAction(btnSyncStatus, '/api/erp/razorpay/sync-status', 'Sync'));
 }
 
 // ── ANALYTICS ──────────────────────────────────────────────

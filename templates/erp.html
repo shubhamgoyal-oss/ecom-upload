@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>App Store Bharat ERP</title>
-  <link rel="stylesheet" href="/static/erp.css?v=20260531">
+  <link rel="stylesheet" href="/static/erp.css?v=20260532">
 </head>
 <body>
   <div class="erp-layout">
@@ -376,6 +376,15 @@
         <div class="section-header">
           <h2>Analytics & Statistics</h2>
           <p class="section-subtitle">View order metrics and system status</p>
+          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+            <button id="btnBackfill" class="btn btn-primary" style="font-size:.85rem;padding:8px 16px">
+              ⬇️ Import from Razorpay
+            </button>
+            <button id="btnSyncStatus" class="btn btn-ghost" style="font-size:.85rem;padding:8px 16px">
+              🔄 Sync Payment Status
+            </button>
+            <span id="backfillMsg" style="align-self:center;font-size:.8rem;color:#64748b"></span>
+          </div>
         </div>
 
         <!-- Quick Stats -->
@@ -587,6 +596,6 @@
   <script id="ordersBoot" type="application/json">{{ orders | tojson }}</script>
   <script id="backendBoot" type="application/json">{{ backend_boot | tojson }}</script>
   <script id="appConfig" type="application/json">{"supported_currencies": {{ supported_currencies | tojson }}, "default_currency": {{ default_currency | tojson }}}</script>
-  <script src="/static/erp.js?v=20260531"></script>
+  <script src="/static/erp.js?v=20260532"></script>
 </body>
 </html>
