@@ -2882,23 +2882,28 @@ def api_erp_analytics():
     puja_count       = sum(1 for o in orders if o.get("order_type") == "puja")
     ecom_count       = sum(1 for o in orders if o.get("order_type") == "ecommerce")
 
-    recent_paid = sorted(paid, key=lambda o: o.get("paid_at") or o.get("updated_at") or "", reverse=True)[:20]
+    recent_paid  = sorted(paid, key=lambda o: o.get("paid_at") or o.get("updated_at") or "", reverse=True)[:20]
+
+    # All orders that have a payment link, sorted newest first
+    links_generated = [o for o in orders if o.get("payment_link")]
 
     return jsonify({
         "ok": True,
         "stats": {
-            "total_orders":  len(orders),
-            "paid_orders":   len(paid),
-            "unpaid_orders": sum(1 for o in orders if o.get("payment_status") == "unpaid"),
-            "pending_orders":sum(1 for o in orders if o.get("payment_status") == "pending"),
-            "total_revenue": round(total_revenue, 2),
-            "puja_revenue":  round(puja_revenue, 2),
-            "ecom_revenue":  round(ecom_revenue, 2),
-            "puja_orders":   puja_count,
-            "ecom_orders":   ecom_count,
-            "currency":      DEFAULT_CURRENCY,
+            "total_orders":       len(orders),
+            "paid_orders":        len(paid),
+            "unpaid_orders":      sum(1 for o in orders if o.get("payment_status") == "unpaid"),
+            "pending_orders":     sum(1 for o in orders if o.get("payment_status") == "pending"),
+            "links_generated":    len(links_generated),
+            "total_revenue":      round(total_revenue, 2),
+            "puja_revenue":       round(puja_revenue, 2),
+            "ecom_revenue":       round(ecom_revenue, 2),
+            "puja_orders":        puja_count,
+            "ecom_orders":        ecom_count,
+            "currency":           DEFAULT_CURRENCY,
         },
-        "recent_paid": recent_paid,
+        "recent_paid":     recent_paid,
+        "links_generated": links_generated,
     })
 
 

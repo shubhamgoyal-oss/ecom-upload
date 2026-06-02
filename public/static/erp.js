@@ -238,38 +238,73 @@ async function loadAnalytics() {
 
     const fmt = (n) => `${cur} ${parseFloat(n || 0).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
 
-    setText('statTotal',       s.total_orders   ?? '—');
-    setText('statPaid',        s.paid_orders    ?? '—');
-    setText('statUnpaid',      s.unpaid_orders  ?? '—');
-    setText('statPending',     s.pending_orders ?? '—');
+    setText('statTotal',       s.total_orders    ?? '—');
+    setText('statLinks',       s.links_generated ?? '—');
+    setText('statPaid',        s.paid_orders     ?? '—');
+    setText('statUnpaid',      s.unpaid_orders   ?? '—');
+    setText('statPending',     s.pending_orders  ?? '—');
     setText('statRevenue',     fmt(s.total_revenue));
     setText('statPujaRevenue', fmt(s.puja_revenue));
     setText('statEcomRevenue', fmt(s.ecom_revenue));
     setText('statSplit',       `🙏 ${s.puja_orders ?? 0}  /  🛒 ${s.ecom_orders ?? 0}`);
 
-    // Recent paid transactions table
+    // ── Recent paid transactions ──────────────────────────
     const tbody = document.getElementById('paidTransactionsBody');
     const paid  = data.recent_paid || [];
-    if (!tbody) return;
-
-    if (!paid.length) {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:24px">No successful transactions yet.</td></tr>';
-      return;
+    if (tbody) {
+      if (!paid.length) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:24px">No successful transactions yet.</td></tr>';
+      } else {
+        tbody.innerHTML = paid.map(o => {
+          const amt    = parseFloat(o.payment_amount || o.amount || 0);
+          const amtFmt = `${o.currency || cur} ${amt.toLocaleString('en-IN', {minimumFractionDigits: 2})}`;
+          const service = esc(o.puja_name || o.item_name || '—');
+          const date    = (o.paid_at || o.updated_at || '').slice(0, 10) || '—';
+          return `<tr>
+            <td><span class="order-uid-cell">${esc(o.order_uid)}</span></td>
+            <td><div class="customer-cell"><div class="name">${esc(o.customer_name || '—')}</div><div class="phone">${esc(o.phone || '')}</div></div></td>
+            <td>${service}</td>
+            <td class="amount-cell" style="color:#16a34a;font-weight:600">${amtFmt}</td>
+            <td>${esc((o.payment_provider || '—').replace(/^\w/, c => c.toUpperCase()))}</td>
+            <td>${date}</td>
+          </tr>`;
+        }).join('');
+      }
     }
-    tbody.innerHTML = paid.map(o => {
-      const amt    = parseFloat(o.payment_amount || o.amount || 0);
-      const amtFmt = `${o.currency || cur} ${amt.toLocaleString('en-IN', {minimumFractionDigits: 2})}`;
-      const service = esc(o.puja_name || o.item_name || '—');
-      const date    = (o.paid_at || o.updated_at || '').slice(0, 10) || '—';
-      return `<tr>
-        <td><span class="order-uid-cell">${esc(o.order_uid)}</span></td>
-        <td><div class="customer-cell"><div class="name">${esc(o.customer_name || '—')}</div><div class="phone">${esc(o.phone || '')}</div></div></td>
-        <td>${service}</td>
-        <td class="amount-cell" style="color:#16a34a;font-weight:600">${amtFmt}</td>
-        <td>${esc((o.payment_provider || '—').replace(/^\w/, c => c.toUpperCase()))}</td>
-        <td>${date}</td>
-      </tr>`;
-    }).join('');
+
+    // ── Payment links generated ───────────────────────────
+    const linksTbody = document.getElementById('linksGeneratedBody');
+    const links      = data.links_generated || [];
+    if (linksTbody) {
+      if (!links.length) {
+        linksTbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:24px">No payment links generated yet.</td></tr>';
+      } else {
+        linksTbody.innerHTML = links.map(o => {
+          const amt     = parseFloat(o.amount || 0);
+          const amtFmt  = `${o.currency || cur} ${amt.toLocaleString('en-IN', {minimumFractionDigits: 2})}`;
+          const service = esc(o.puja_name || o.item_name || '—');
+          const date    = (o.created_at || '').slice(0, 10) || '—';
+          const status  = o.payment_status || 'unpaid';
+          const statusCls = status.toLowerCase();
+          const statusLabel = statusEmoji(status) + ' ' + capitalize(status);
+          const linkUrl = o.payment_link || '';
+          return `<tr>
+            <td><span class="order-uid-cell">${esc(o.order_uid)}</span></td>
+            <td><div class="customer-cell"><div class="name">${esc(o.customer_name || '—')}</div><div class="phone">${esc(o.phone || '')}</div></div></td>
+            <td>${service}</td>
+            <td class="amount-cell">${amtFmt}</td>
+            <td style="max-width:180px">
+              ${linkUrl
+                ? `<a href="${esc(linkUrl)}" target="_blank" style="font-size:12px;color:#6366f1;word-break:break-all">${esc(linkUrl.replace('https://',''))}</a>
+                   <button class="action-btn" style="margin-left:4px" onclick="copyLink('${esc(linkUrl)}')">📋</button>`
+                : '<span style="color:#94a3b8">—</span>'}
+            </td>
+            <td><span class="status-pill ${statusCls}">${statusLabel}</span></td>
+            <td>${date}</td>
+          </tr>`;
+        }).join('');
+      }
+    }
   } catch(_) {}
 }
 

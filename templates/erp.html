@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>App Store Bharat ERP</title>
-  <link rel="stylesheet" href="/static/erp.css?v=20260530">
+  <link rel="stylesheet" href="/static/erp.css?v=20260531">
 </head>
 <body>
   <div class="erp-layout">
@@ -387,6 +387,13 @@
               <p class="stat-value" id="statTotal">0</p>
             </div>
           </div>
+          <div class="stat-card" style="background:linear-gradient(135deg,#1e40af,#3b82f6)">
+            <div class="stat-icon">🔗</div>
+            <div class="stat-content">
+              <p class="stat-label" style="color:rgba(255,255,255,.75)">Links Generated</p>
+              <p class="stat-value" id="statLinks" style="color:#fff">0</p>
+            </div>
+          </div>
           <div class="stat-card success">
             <div class="stat-icon">✅</div>
             <div class="stat-content">
@@ -459,6 +466,29 @@
               </thead>
               <tbody id="paidTransactionsBody">
                 <tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:24px">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Payment Links Generated -->
+        <div class="inspector-panel" style="margin-top:24px">
+          <h3>🔗 Payment Links Generated</h3>
+          <div style="overflow-x:auto;margin-top:12px">
+            <table class="orders-table">
+              <thead>
+                <tr>
+                  <th>Order ID</th>
+                  <th>Customer</th>
+                  <th>Service / Item</th>
+                  <th>Amount</th>
+                  <th>Payment Link</th>
+                  <th>Status</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody id="linksGeneratedBody">
+                <tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:24px">Loading…</td></tr>
               </tbody>
             </table>
           </div>
@@ -557,6 +587,6 @@
   <script id="ordersBoot" type="application/json">{{ orders | tojson }}</script>
   <script id="backendBoot" type="application/json">{{ backend_boot | tojson }}</script>
   <script id="appConfig" type="application/json">{"supported_currencies": {{ supported_currencies | tojson }}, "default_currency": {{ default_currency | tojson }}}</script>
-  <script src="/static/erp.js?v=20260530"></script>
+  <script src="/static/erp.js?v=20260531"></script>
 </body>
 </html>
