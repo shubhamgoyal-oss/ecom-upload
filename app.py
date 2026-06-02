@@ -942,14 +942,6 @@ def create_order(payload: Dict) -> Dict:
         postal_code = str(payload.get("postal_code") or "").strip()
         item_name = str(payload.get("item_name") or "").strip()
         quantity = parse_positive_int(payload.get("quantity"), fallback=1)
-        if not address_line1:
-            raise ValueError("Address line 1 is required for e-commerce orders.")
-        if not city:
-            raise ValueError("City is required for e-commerce orders.")
-        if not state:
-            raise ValueError("State is required for e-commerce orders.")
-        if not postal_code:
-            raise ValueError("Postal code is required for e-commerce orders.")
         if not item_name:
             raise ValueError("Item name is required for e-commerce orders.")
 
