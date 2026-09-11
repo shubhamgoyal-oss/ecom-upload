@@ -150,9 +150,22 @@ XPAY_CANCEL_URL = os.environ.get("XPAY_CANCEL_URL", "").strip()
 XPAY_LINK_EXPIRY_HOURS = int(os.environ.get("XPAY_LINK_EXPIRY_HOURS", "24"))
 XPAY_PHONE_REQUIRED = env_flag("XPAY_PHONE_REQUIRED", "false")
 DEFAULT_CURRENCY = os.environ.get("DEFAULT_CURRENCY", "INR").strip().upper() or "INR"
+# Full currency list Razorpay documents for international payments (Payment Links/Gateway):
+# https://razorpay.com/docs/payments/international-payments/#supported-currencies
+# Listing a currency here does not make it usable by itself — International Payments
+# must also be enabled on the Razorpay account, or non-INR requests will be rejected.
+_RAZORPAY_SUPPORTED_CURRENCIES = (
+    "INR,AED,ALL,AMD,AUD,AWG,AZN,BAM,BBD,BDT,BGN,BHD,BIF,BMD,BND,BOB,BRL,BSD,BTN,BWP,BZD,"
+    "CAD,CHF,CLP,CNY,COP,CRC,CUP,CVE,CZK,DJF,DKK,DOP,DZD,EGP,ETB,EUR,FJD,GBP,GHS,GIP,GMD,"
+    "GNF,GTQ,GYD,HKD,HNL,HRK,HTG,HUF,IDR,ILS,IQD,ISK,JMD,JOD,JPY,KES,KGS,KHR,KMF,KRW,KWD,"
+    "KYD,KZT,LAK,LKR,LRD,LSL,MAD,MDL,MGA,MKD,MMK,MNT,MOP,MUR,MVR,MWK,MXN,MYR,MZN,NAD,NGN,"
+    "NIO,NOK,NPR,NZD,OMR,PEN,PGK,PHP,PKR,PLN,PYG,QAR,RON,RSD,RUB,RWF,SAR,SCR,SEK,SGD,SLL,"
+    "SOS,SVC,SZL,THB,TND,TRY,TTD,TWD,TZS,UAH,UGX,USD,UYU,UZS,VND,VUV,XAF,XCD,XOF,XPF,YER,"
+    "ZAR,ZMW"
+)
 SUPPORTED_CURRENCIES = [
     c.strip().upper()
-    for c in (os.environ.get("SUPPORTED_CURRENCIES", "INR,USD,EUR,GBP,AED,SGD").split(","))
+    for c in (os.environ.get("SUPPORTED_CURRENCIES", _RAZORPAY_SUPPORTED_CURRENCIES).split(","))
     if c.strip()
 ]
 if DEFAULT_CURRENCY not in SUPPORTED_CURRENCIES:
