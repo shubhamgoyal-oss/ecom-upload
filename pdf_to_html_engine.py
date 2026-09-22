@@ -55,8 +55,12 @@ if VISION_PROVIDER not in ("anthropic", "gemini"):
 _REQUEST_TIMEOUT_SECONDS = 55
 
 # Guardrails: this is a demo-scale tool (one vision API call per page,
-# driven synchronously by the browser), not a bulk pipeline.
-MAX_PAGES = 60
+# driven synchronously by the browser), not a bulk pipeline. There's no
+# resume/checkpoint — the whole run lives in one browser tab, so a dropped
+# connection or closed tab partway through means starting over from page 1.
+# 500 gives headroom for a full book-length document while still bounding
+# a single run to a reasonable wall-clock time and API cost.
+MAX_PAGES = 500
 # Decoded size of a single page image. Kept well under Vercel Functions'
 # ~4.5MB request body cap: base64 inflates this by ~4/3, plus JSON overhead,
 # so 3MB decoded lands around ~4.1MB on the wire.
