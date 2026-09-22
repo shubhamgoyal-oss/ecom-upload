@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF → HTML</title>
+  <link rel="stylesheet" href="/static/erp.css?v=20260532">
+  <link rel="stylesheet" href="/static/pdf-to-html.css?v=1">
+</head>
+<body>
+  <div class="page-shell">
+    <div class="page-header">
+      <h1>📄 PDF → HTML</h1>
+      <a href="/erp">← Back to ERP</a>
+    </div>
+    <p class="subtitle">
+      Upload a PDF and each page is read visually by an AI model (not the PDF's raw text layer,
+      which is often unreliable for stylized fonts or scanned pages) and rebuilt as a single HTML file.
+      Runs entirely in your browser plus one API call per page — nothing is stored on the server.
+    </p>
+
+    {% if not engine_configured %}
+    <div class="alert alert-warning">
+      <strong>Not configured yet.</strong> The server is missing <code>ANTHROPIC_API_KEY</code>.
+      Add it under Vercel Project Settings → Environment Variables, then redeploy.
+    </div>
+    {% endif %}
+
+    <div class="form-section" id="uploadSection">
+      <div class="form-grid cols-1">
+        <div class="form-group">
+          <label for="titleInput">Document title (optional)</label>
+          <input type="text" id="titleInput" placeholder="Defaults to the file name">
+        </div>
+        <div class="form-group">
+          <label>PDF file</label>
+          <label class="dropzone" id="dropzone" for="fileInput">
+            <div id="dropzoneText">
+              <div>📎 Click to choose a PDF, or drag one here</div>
+              <p>Max {{ max_pages }} pages per file.</p>
+            </div>
+            <input type="file" id="fileInput" accept="application/pdf,.pdf">
+          </label>
+        </div>
+      </div>
+      <div class="actions-row" style="margin-top:16px;">
+        <button class="btn btn-primary btn-lg" id="convertBtn" disabled>Convert to HTML</button>
+      </div>
+    </div>
+
+    <div class="form-section" id="progressSection" hidden>
+      <div class="section-title">Converting…</div>
+      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="progress-label">
+        <span id="progressText">Starting…</span>
+        <span id="progressCount"></span>
+      </div>
+      <div class="actions-row" style="margin-top:14px;">
+        <button class="btn btn-secondary btn-sm" id="cancelBtn">Cancel</button>
+      </div>
+    </div>
+
+    <div class="alert alert-error" id="errorBox" hidden></div>
+
+    <div class="form-section" id="resultSection" hidden>
+      <div class="section-title">Done</div>
+      <div class="actions-row" style="margin-bottom:14px;">
+        <button class="btn btn-primary" id="downloadBtn">⬇ Download HTML</button>
+        <button class="btn btn-outline" id="startOverBtn">Convert another</button>
+      </div>
+      <div class="preview-frame-wrap">
+        <iframe id="previewFrame" title="Generated HTML preview" sandbox=""></iframe>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    // Self-hosted (not a CDN): keeps this in sync with the app's other static
+    // assets and avoids depending on a third-party host's uptime/version at
+    // request time — see public/static/vendor/pdfjs/.
+    import * as pdfjsLib from "/static/vendor/pdfjs/pdf.min.mjs";
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "/static/vendor/pdfjs/pdf.worker.min.mjs";
+
+    const MAX_PAGES = {{ max_pages }};
+    const TARGET_LONG_EDGE = 1800; // px, for OCR legibility without huge payloads
+    // Keeps each page's upload comfortably under the server's per-request cap
+    // (itself sized to stay under Vercel Functions' ~4.5MB body limit).
+    const MAX_PAGE_UPLOAD_BYTES = 3.5 * 1024 * 1024;
+    const JPEG_QUALITY_STEPS = [0.85, 0.6, 0.4];
+
+    const $ = (id) => document.getElementById(id);
+    const fileInput = $("fileInput");
+    const dropzone = $("dropzone");
+    const dropzoneText = $("dropzoneText");
+    const titleInput = $("titleInput");
+    const convertBtn = $("convertBtn");
+    const uploadSection = $("uploadSection");
+    const progressSection = $("progressSection");
+    const progressFill = $("progressFill");
+    const progressText = $("progressText");
+    const progressCount = $("progressCount");
+    const errorBox = $("errorBox");
+    const resultSection = $("resultSection");
+    const previewFrame = $("previewFrame");
+    const downloadBtn = $("downloadBtn");
+    const startOverBtn = $("startOverBtn");
+    const cancelBtn = $("cancelBtn");
+
+    let selectedFile = null;
+    let cancelled = false;
+    let generatedHtml = "";
+    let generatedName = "document.html";
+
+    fileInput.addEventListener("change", () => {
+      selectedFile = fileInput.files[0] || null;
+      dropzoneText.innerHTML = selectedFile
+        ? `<div class="file-name">📄 ${escapeHtml(selectedFile.name)}</div><p>${(selectedFile.size / 1024).toFixed(0)} KB — click to change</p>`
+        : `<div>📎 Click to choose a PDF, or drag one here</div><p>Max ${MAX_PAGES} pages per file.</p>`;
+      convertBtn.disabled = !selectedFile;
+    });
+
+    ["dragover", "dragenter"].forEach((evt) =>
+      dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.add("dragover"); })
+    );
+    ["dragleave", "drop"].forEach((evt) =>
+      dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); })
+    );
+    dropzone.addEventListener("drop", (e) => {
+      const f = e.dataTransfer.files[0];
+      if (f) {
+        fileInput.files = e.dataTransfer.files;
+        fileInput.dispatchEvent(new Event("change"));
+      }
+    });
+
+    convertBtn.addEventListener("click", () => { if (selectedFile) startConversion(selectedFile); });
+    cancelBtn.addEventListener("click", () => { cancelled = true; });
+    startOverBtn.addEventListener("click", resetToUpload);
+
+    downloadBtn.addEventListener("click", () => {
+      const blob = new Blob([generatedHtml], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = generatedName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    });
+
+    function escapeHtml(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function resetToUpload() {
+      selectedFile = null;
+      fileInput.value = "";
+      dropzoneText.innerHTML = `<div>📎 Click to choose a PDF, or drag one here</div><p>Max ${MAX_PAGES} pages per file.</p>`;
+      convertBtn.disabled = true;
+      resultSection.hidden = true;
+      errorBox.hidden = true;
+      uploadSection.hidden = false;
+    }
+
+    function showError(message) {
+      errorBox.textContent = message;
+      errorBox.hidden = false;
+      progressSection.hidden = true;
+      uploadSection.hidden = false;
+    }
+
+    function setProgress(current, total, label) {
+      progressFill.style.width = total ? `${(current / total) * 100}%` : "0%";
+      progressText.textContent = label;
+      progressCount.textContent = total ? `${current} / ${total} pages` : "";
+    }
+
+    // Renders the full page to a JPEG at decreasing quality until it fits
+    // the upload budget, instead of one fixed quality that could still blow
+    // past the server's size cap on a very busy/high-DPI-rendered page.
+    function encodePageWithinBudget(canvas) {
+      for (const quality of JPEG_QUALITY_STEPS) {
+        const dataUrl = canvas.toDataURL("image/jpeg", quality);
+        const base64 = dataUrl.split(",")[1];
+        if (base64.length * 0.75 <= MAX_PAGE_UPLOAD_BYTES) {
+          return { base64, mediaType: "image/jpeg" };
+        }
+      }
+      throw new Error("This page is too complex to upload at a size the server accepts.");
+    }
+
+    function cropRegion(sourceCanvas, bbox) {
+      if (!bbox || !["x", "y", "width", "height"].every((k) => Number.isFinite(bbox[k]))) {
+        return null;
+      }
+      const sx = Math.max(0, bbox.x * sourceCanvas.width);
+      const sy = Math.max(0, bbox.y * sourceCanvas.height);
+      const sw = Math.min(sourceCanvas.width - sx, bbox.width * sourceCanvas.width);
+      const sh = Math.min(sourceCanvas.height - sy, bbox.height * sourceCanvas.height);
+      if (!(sw > 0) || !(sh > 0)) return null; // also rejects NaN, unlike sw <= 0
+      const out = document.createElement("canvas");
+      out.width = Math.max(1, Math.round(sw));
+      out.height = Math.max(1, Math.round(sh));
+      out.getContext("2d").drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, out.width, out.height);
+      return out.toDataURL("image/png").split(",")[1];
+    }
+
+    // ── Client-side HTML assembly ─────────────────────────────────────────
+    // Deliberately not a server round-trip: sending every accumulated block
+    // plus every cropped image for the whole document in one request (and
+    // getting the assembled HTML with those images re-embedded back in one
+    // response) would need to fit Vercel Functions' ~4.5MB body limit, which
+    // any real multi-page/multi-image document exceeds. The browser already
+    // holds all of this in memory, so it builds the file itself.
+
+    const ALLOWED_ALIGN = new Set(["left", "center", "right"]);
+    const ALLOWED_COLOR = new Set(["red", "blue", "green", "orange", "purple"]);
+    const ALLOWED_IMAGE_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+    const BASE64_RE = /^[A-Za-z0-9+/]+=*$/;
+
+    function blockStyleAttr(block) {
+      const bits = [];
+      if (ALLOWED_ALIGN.has(block.align)) bits.push(`text-align:${block.align}`);
+      if (ALLOWED_COLOR.has(block.color)) bits.push(`color:var(--accent-${block.color})`);
+      return bits.length ? ` style="${bits.join(";")}"` : "";
+    }
+
+    function renderBlocksToHtml(blocks) {
+      const parts = [];
+      let listBuffer = [];
+      const flushList = () => {
+        if (listBuffer.length) {
+          parts.push(`<ul>\n${listBuffer.join("\n")}\n</ul>`);
+          listBuffer = [];
+        }
+      };
+
+      for (const b of blocks || []) {
+        if (!b || typeof b !== "object") continue;
+        const btype = b.type;
+        if (btype !== "list_item") flushList();
+
+        const styleAttr = blockStyleAttr(b);
+        let text = escapeHtml(typeof b.text === "string" ? b.text : "");
+        if (b.bold) text = `<strong>${text}</strong>`;
+
+        if (btype === "heading") parts.push(`<h2${styleAttr}>${text}</h2>`);
+        else if (btype === "subheading") parts.push(`<h3${styleAttr}>${text}</h3>`);
+        else if (btype === "paragraph") parts.push(`<p${styleAttr}>${text}</p>`);
+        else if (btype === "quote") parts.push(`<blockquote${styleAttr}>${text}</blockquote>`);
+        else if (btype === "list_item") listBuffer.push(`<li${styleAttr}>${text}</li>`);
+        else if (btype === "caption") parts.push(`<p class="caption"${styleAttr}>${text}</p>`);
+        else if (btype === "image") {
+          const data = typeof b.data === "string" && BASE64_RE.test(b.data) ? b.data : null;
+          const mediaType = ALLOWED_IMAGE_MEDIA_TYPES.has(b.media_type) ? b.media_type : "image/png";
+          if (data) {
+            const alt = escapeHtml((typeof b.text === "string" && b.text) || "Figure");
+            parts.push(`<figure><img src="data:${mediaType};base64,${data}" alt="${alt}"></figure>`);
+          }
+        }
+        // unknown types are silently skipped
+      }
+      flushList();
+      return parts.join("\n");
+    }
+
+    function renderHtmlDocument(title, blocks) {
+      const safeTitle = escapeHtml(title || "Converted document");
+      return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${safeTitle}</title>
+<style>
+  :root {
+    --ink: #1a1a1a; --paper: #ffffff; --paper-alt: #f4f5f7; --rule: #dfe3e8;
+    --accent: #4f46e5; --accent-red: #b3261e; --accent-blue: #1d4ed8;
+    --accent-green: #15803d; --accent-orange: #c2410c; --accent-purple: #7e22ce;
+    --max-w: 720px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #e7e7e7; --paper: #16171a; --paper-alt: #1c1e22; --rule: #33363d;
+    }
+  }
+  :root[data-theme="dark"] { --ink: #e7e7e7; --paper: #16171a; --paper-alt: #1c1e22; --rule: #33363d; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper-alt); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+    line-height: 1.7;
+  }
+  main { max-width: var(--max-w); margin: 0 auto; background: var(--paper); padding: 40px 24px 64px; min-height: 100vh; }
+  h1.doc-title { font-size: 1.6rem; margin: 0 0 32px; text-align: center; }
+  h2 { font-size: 1.25rem; margin: 32px 0 12px; }
+  h3 { font-size: 1.05rem; margin: 24px 0 10px; color: var(--accent); }
+  p { margin: 12px 0; }
+  p.caption { font-size: 0.85rem; opacity: 0.7; font-style: italic; text-align: center; }
+  blockquote { margin: 16px 0; padding: 4px 16px; border-left: 3px solid var(--accent); background: var(--paper-alt); font-style: italic; }
+  ul { margin: 12px 0; padding-left: 1.4em; }
+  li { margin: 4px 0; }
+  figure { margin: 20px 0; text-align: center; }
+  figure img { max-width: 100%; height: auto; border-radius: 4px; }
+  @media (max-width: 420px) { main { padding: 28px 16px 48px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1 class="doc-title">${safeTitle}</h1>
+${renderBlocksToHtml(blocks)}
+</main>
+</body>
+</html>
+`;
+    }
+
+    async function startConversion(file) {
+      cancelled = false;
+      errorBox.hidden = true;
+      uploadSection.hidden = true;
+      resultSection.hidden = true;
+      progressSection.hidden = false;
+      setProgress(0, 0, "Reading PDF…");
+
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const numPages = pdf.numPages;
+
+        if (numPages > MAX_PAGES) {
+          throw new Error(`This PDF has ${numPages} pages; this tool processes at most ${MAX_PAGES} at a time.`);
+        }
+
+        setProgress(0, numPages, "Starting…");
+        const allBlocks = [];
+
+        for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+          if (cancelled) throw new Error("Cancelled.");
+
+          const page = await pdf.getPage(pageNum);
+          const baseViewport = page.getViewport({ scale: 1 });
+          const scale = TARGET_LONG_EDGE / Math.max(baseViewport.width, baseViewport.height);
+          const viewport = page.getViewport({ scale: Math.min(Math.max(scale, 1), 3) });
+
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.ceil(viewport.width);
+          canvas.height = Math.ceil(viewport.height);
+          const ctx = canvas.getContext("2d");
+          await page.render({ canvasContext: ctx, viewport }).promise;
+
+          setProgress(pageNum - 1, numPages, `Reading page ${pageNum}…`);
+          const { base64: imageBase64, mediaType } = encodePageWithinBudget(canvas);
+
+          const resp = await fetch("/api/pdf-to-html/process-page", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ image_base64: imageBase64, media_type: mediaType, page_number: pageNum }),
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok || !data.ok) {
+            throw new Error(data.error || `Page ${pageNum} failed (HTTP ${resp.status}).`);
+          }
+
+          for (const block of data.blocks || []) {
+            if (block && block.type === "image" && block.image_bbox) {
+              const cropped = cropRegion(canvas, block.image_bbox);
+              if (cropped) {
+                block.data = cropped;
+                block.media_type = "image/png";
+              }
+              delete block.image_bbox;
+            }
+            allBlocks.push(block);
+          }
+          setProgress(pageNum, numPages, pageNum === numPages ? "Building HTML…" : `Read page ${pageNum}`);
+        }
+
+        const title = titleInput.value.trim() || file.name.replace(/\.pdf$/i, "");
+        generatedHtml = renderHtmlDocument(title, allBlocks);
+        const cleanedName = title.replace(/[^\w\-]+/g, "_").replace(/^_+|_+$/g, "");
+        generatedName = (cleanedName || "document") + ".html";
+        previewFrame.srcdoc = generatedHtml;
+        progressSection.hidden = true;
+        resultSection.hidden = false;
+      } catch (err) {
+        showError(err.message || String(err));
+      }
+    }
+  </script>
+</body>
+</html>

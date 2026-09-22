@@ -24,6 +24,8 @@ from bs4 import BeautifulSoup
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.utils import secure_filename
 
+import pdf_to_html_engine
+
 
 def load_local_env(env_path: Path):
     if not env_path.exists():
@@ -2958,6 +2960,62 @@ def erp_dashboard():
             "picture": session.get("user_picture", ""),
         },
     )
+
+
+# ── PDF → HTML conversion routes ─────────────────────────────────────────────
+# Pages are rendered to images client-side (pdf.js) and sent here one at a
+# time; the server holds no job state between requests. See
+# pdf_to_html_engine.py for why.
+#
+# @login_required falls back to open access when neither GOOGLE_CLIENT_ID nor
+# ERP_ACCESS_TOKEN is configured (see check_erp_auth above) — true for every
+# route in this file, but here it also means an unconfigured deployment lets
+# anyone trigger billed Anthropic API calls. Set one of those before this
+# feature goes live anywhere reachable by strangers.
+
+@app.route("/pdf-to-html", methods=["GET"])
+@login_required
+def pdf_to_html_page():
+    return render_template(
+        "pdf_to_html.html",
+        app_meta={"version": APP_VERSION, "boot_utc": APP_BOOT_UTC},
+        current_user={
+            "email":   session.get("user_email", ""),
+            "name":    session.get("user_name", ""),
+            "picture": session.get("user_picture", ""),
+        },
+        engine_configured=pdf_to_html_engine.is_configured(),
+        max_pages=pdf_to_html_engine.MAX_PAGES,
+    )
+
+
+# Rejected before Flask buffers/parses the body: a request this big is either
+# abuse or already doomed to exceed Vercel Functions' ~4.5MB body cap, so
+# there's no point paying for the parse first.
+_MAX_PROCESS_PAGE_REQUEST_BYTES = 4 * 1024 * 1024
+
+
+@app.route("/api/pdf-to-html/process-page", methods=["POST"])
+@login_required
+def api_pdf_to_html_process_page():
+    if (request.content_length or 0) > _MAX_PROCESS_PAGE_REQUEST_BYTES:
+        return jsonify({"ok": False, "error": "Page image is too large."}), 413
+    payload = request.get_json(silent=True) or {}
+    image_base64 = payload.get("image_base64", "")
+    media_type = payload.get("media_type", "image/png")
+    if not isinstance(image_base64, str) or not image_base64:
+        return jsonify({"ok": False, "error": "Missing image_base64."}), 400
+    if not isinstance(media_type, str):
+        return jsonify({"ok": False, "error": "Invalid media_type."}), 400
+    try:
+        blocks = pdf_to_html_engine.transcribe_page(image_base64, media_type)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Page transcription failed: {exc}"}), 502
+    return jsonify({"ok": True, "blocks": blocks})
 
 
 def read_request_payload() -> Dict:
