@@ -15,14 +15,16 @@
     </div>
     <p class="subtitle">
       Upload a PDF and each page is read visually by an AI model (not the PDF's raw text layer,
-      which is often unreliable for stylized fonts or scanned pages) and rebuilt as a single HTML file.
-      Runs entirely in your browser plus one API call per page — nothing is stored on the server.
+      which is often unreliable for stylized fonts or scanned pages), then rebuilt and downloaded
+      as a single HTML file automatically. Runs in your browser plus one API call per page —
+      nothing is stored on the server.
     </p>
 
     {% if not engine_configured %}
     <div class="alert alert-warning">
-      <strong>Not configured yet.</strong> The server is missing <code>ANTHROPIC_API_KEY</code>.
-      Add it under Vercel Project Settings → Environment Variables, then redeploy.
+      <strong>Not configured yet.</strong> The server is missing its vision API key
+      ({{ vision_provider_env }}). Add it under Vercel Project Settings → Environment
+      Variables, then redeploy.
     </div>
     {% endif %}
 
@@ -37,35 +39,37 @@
           <label class="dropzone" id="dropzone" for="fileInput">
             <div id="dropzoneText">
               <div>📎 Click to choose a PDF, or drag one here</div>
-              <p>Max {{ max_pages }} pages per file.</p>
+              <p>Converts and downloads automatically. Max {{ max_pages }} pages per file.</p>
             </div>
             <input type="file" id="fileInput" accept="application/pdf,.pdf">
           </label>
         </div>
       </div>
-      <div class="actions-row" style="margin-top:16px;">
-        <button class="btn btn-primary btn-lg" id="convertBtn" disabled>Convert to HTML</button>
-      </div>
     </div>
 
-    <div class="form-section" id="progressSection" hidden>
-      <div class="section-title">Converting…</div>
+    <div class="status-screen" id="loadingScreen" hidden>
+      <div class="spinner" aria-hidden="true"></div>
+      <p class="status-headline">Reading your PDF…</p>
+      <p class="status-sub">Opening the file and counting pages.</p>
+    </div>
+
+    <div class="status-screen" id="progressScreen" hidden>
+      <div class="spinner" aria-hidden="true"></div>
+      <p class="status-headline" id="progressHeadline">Converting…</p>
       <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
       <div class="progress-label">
         <span id="progressText">Starting…</span>
         <span id="progressCount"></span>
       </div>
-      <div class="actions-row" style="margin-top:14px;">
-        <button class="btn btn-secondary btn-sm" id="cancelBtn">Cancel</button>
-      </div>
+      <button class="btn btn-secondary btn-sm" id="cancelBtn">Cancel</button>
     </div>
 
     <div class="alert alert-error" id="errorBox" hidden></div>
 
     <div class="form-section" id="resultSection" hidden>
-      <div class="section-title">Done</div>
+      <div class="section-title">✅ Done — downloaded automatically</div>
       <div class="actions-row" style="margin-bottom:14px;">
-        <button class="btn btn-primary" id="downloadBtn">⬇ Download HTML</button>
+        <button class="btn btn-primary" id="downloadBtn">⬇ Download again</button>
         <button class="btn btn-outline" id="startOverBtn">Convert another</button>
       </div>
       <div class="preview-frame-wrap">
@@ -93,9 +97,10 @@
     const dropzone = $("dropzone");
     const dropzoneText = $("dropzoneText");
     const titleInput = $("titleInput");
-    const convertBtn = $("convertBtn");
     const uploadSection = $("uploadSection");
-    const progressSection = $("progressSection");
+    const loadingScreen = $("loadingScreen");
+    const progressScreen = $("progressScreen");
+    const progressHeadline = $("progressHeadline");
     const progressFill = $("progressFill");
     const progressText = $("progressText");
     const progressCount = $("progressCount");
@@ -106,17 +111,15 @@
     const startOverBtn = $("startOverBtn");
     const cancelBtn = $("cancelBtn");
 
-    let selectedFile = null;
-    let cancelled = false;
+    let abortController = null;
     let generatedHtml = "";
     let generatedName = "document.html";
 
+    // Selecting or dropping a file starts the conversion immediately — there
+    // is no separate "Convert" step.
     fileInput.addEventListener("change", () => {
-      selectedFile = fileInput.files[0] || null;
-      dropzoneText.innerHTML = selectedFile
-        ? `<div class="file-name">📄 ${escapeHtml(selectedFile.name)}</div><p>${(selectedFile.size / 1024).toFixed(0)} KB — click to change</p>`
-        : `<div>📎 Click to choose a PDF, or drag one here</div><p>Max ${MAX_PAGES} pages per file.</p>`;
-      convertBtn.disabled = !selectedFile;
+      const file = fileInput.files[0];
+      if (file) startConversion(file);
     });
 
     ["dragover", "dragenter"].forEach((evt) =>
@@ -126,18 +129,15 @@
       dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); })
     );
     dropzone.addEventListener("drop", (e) => {
-      const f = e.dataTransfer.files[0];
-      if (f) {
-        fileInput.files = e.dataTransfer.files;
-        fileInput.dispatchEvent(new Event("change"));
-      }
+      const file = e.dataTransfer.files[0];
+      if (file) startConversion(file);
     });
 
-    convertBtn.addEventListener("click", () => { if (selectedFile) startConversion(selectedFile); });
-    cancelBtn.addEventListener("click", () => { cancelled = true; });
+    cancelBtn.addEventListener("click", () => { abortController?.abort(); });
     startOverBtn.addEventListener("click", resetToUpload);
+    downloadBtn.addEventListener("click", triggerDownload);
 
-    downloadBtn.addEventListener("click", () => {
+    function triggerDownload() {
       const blob = new Blob([generatedHtml], { type: "text/html" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -147,30 +147,37 @@
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-    });
+    }
 
     function escapeHtml(s) {
       return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     }
 
+    // "upload" and an error are shown together (so the user can retry right
+    // away without an extra click back); loading/progress/result are each
+    // full-screen and mutually exclusive with everything else.
+    function showScreen(screen) {
+      uploadSection.hidden = !(screen === "upload" || screen === "error");
+      loadingScreen.hidden = screen !== "loading";
+      progressScreen.hidden = screen !== "progress";
+      errorBox.hidden = screen !== "error";
+      resultSection.hidden = screen !== "result";
+    }
+
     function resetToUpload() {
-      selectedFile = null;
       fileInput.value = "";
-      dropzoneText.innerHTML = `<div>📎 Click to choose a PDF, or drag one here</div><p>Max ${MAX_PAGES} pages per file.</p>`;
-      convertBtn.disabled = true;
-      resultSection.hidden = true;
-      errorBox.hidden = true;
-      uploadSection.hidden = false;
+      dropzoneText.innerHTML = `<div>📎 Click to choose a PDF, or drag one here</div><p>Converts and downloads automatically. Max ${MAX_PAGES} pages per file.</p>`;
+      showScreen("upload");
     }
 
     function showError(message) {
       errorBox.textContent = message;
-      errorBox.hidden = false;
-      progressSection.hidden = true;
-      uploadSection.hidden = false;
+      fileInput.value = "";
+      showScreen("error");
     }
 
     function setProgress(current, total, label) {
+      progressHeadline.textContent = current === 0 ? "Converting…" : "Reading your document…";
       progressFill.style.width = total ? `${(current / total) * 100}%` : "0%";
       progressText.textContent = label;
       progressCount.textContent = total ? `${current} / ${total} pages` : "";
@@ -317,12 +324,9 @@ ${renderBlocksToHtml(blocks)}
     }
 
     async function startConversion(file) {
-      cancelled = false;
-      errorBox.hidden = true;
-      uploadSection.hidden = true;
-      resultSection.hidden = true;
-      progressSection.hidden = false;
-      setProgress(0, 0, "Reading PDF…");
+      abortController = new AbortController();
+      const { signal } = abortController;
+      showScreen("loading");
 
       try {
         const arrayBuffer = await file.arrayBuffer();
@@ -333,12 +337,11 @@ ${renderBlocksToHtml(blocks)}
           throw new Error(`This PDF has ${numPages} pages; this tool processes at most ${MAX_PAGES} at a time.`);
         }
 
+        showScreen("progress");
         setProgress(0, numPages, "Starting…");
         const allBlocks = [];
 
         for (let pageNum = 1; pageNum <= numPages; pageNum++) {
-          if (cancelled) throw new Error("Cancelled.");
-
           const page = await pdf.getPage(pageNum);
           const baseViewport = page.getViewport({ scale: 1 });
           const scale = TARGET_LONG_EDGE / Math.max(baseViewport.width, baseViewport.height);
@@ -357,6 +360,7 @@ ${renderBlocksToHtml(blocks)}
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ image_base64: imageBase64, media_type: mediaType, page_number: pageNum }),
+            signal,
           });
           const data = await resp.json().catch(() => ({}));
           if (!resp.ok || !data.ok) {
@@ -382,10 +386,15 @@ ${renderBlocksToHtml(blocks)}
         const cleanedName = title.replace(/[^\w\-]+/g, "_").replace(/^_+|_+$/g, "");
         generatedName = (cleanedName || "document") + ".html";
         previewFrame.srcdoc = generatedHtml;
-        progressSection.hidden = true;
-        resultSection.hidden = false;
+
+        showScreen("result");
+        triggerDownload(); // the whole point of this page: upload in, HTML file out
       } catch (err) {
-        showError(err.message || String(err));
+        if (err.name === "AbortError") {
+          showError("Cancelled.");
+        } else {
+          showError(err.message || String(err));
+        }
       }
     }
   </script>

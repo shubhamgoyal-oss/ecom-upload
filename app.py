@@ -2986,6 +2986,9 @@ def pdf_to_html_page():
         },
         engine_configured=pdf_to_html_engine.is_configured(),
         max_pages=pdf_to_html_engine.MAX_PAGES,
+        vision_provider_env=(
+            "GOOGLE_API_KEY" if pdf_to_html_engine.VISION_PROVIDER == "gemini" else "ANTHROPIC_API_KEY"
+        ),
     )
 
 
