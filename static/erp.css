@@ -1185,7 +1185,7 @@ input[readonly]:focus { box-shadow: none; border-color: var(--border-strong); }
 }
 
 .country-code-select {
-  width: 110px;
+  width: 150px;
   flex-shrink: 0;
   font-size: 13px;
 }
@@ -1210,7 +1210,7 @@ input[readonly]:focus { box-shadow: none; border-color: var(--border-strong); }
 }
 
 @media (max-width: 480px) {
-  .country-code-select { width: 90px; font-size: 12px; }
+  .country-code-select { width: 120px; font-size: 12px; }
 }
 
 @media (max-width: 480px) {
