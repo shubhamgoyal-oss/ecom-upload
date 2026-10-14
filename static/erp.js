@@ -79,6 +79,21 @@ function initOrderTypeSelector() {
 // ── PHONE COUNTRY CODES ────────────────────────────────────
 // [ISO country, name, dial code]. India first, rest alphabetical.
 const PHONE_COUNTRIES = [
+  ['AC', 'Ascension Island', '247'],
+  ['AQ', 'Antarctica', '672'],
+  ['AX', 'Aland Islands', '358'],
+  ['BL', 'St Barthelemy', '590'],
+  ['BQ', 'Caribbean Netherlands', '599'],
+  ['CC', 'Cocos (Keeling) Islands', '61'],
+  ['CX', 'Christmas Island', '61'],
+  ['EH', 'Western Sahara', '212'],
+  ['MF', 'St Martin', '590'],
+  ['NF', 'Norfolk Island', '672'],
+  ['PM', 'St Pierre and Miquelon', '508'],
+  ['SH', 'St Helena', '290'],
+  ['SJ', 'Svalbard and Jan Mayen', '47'],
+  ['PN', 'Pitcairn Islands', '64'],
+  ['TA', 'Tristan da Cunha', '290'],
   ['IN', 'India', '91'],
   ['AF', 'Afghanistan', '93'],
   ['AL', 'Albania', '355'],
@@ -317,7 +332,8 @@ function initPhoneCodeDropdowns() {
   const flag = iso => String.fromCodePoint(...[...iso].map(ch => 0x1F1E6 + ch.charCodeAt(0) - 65));
   document.querySelectorAll('select[name="phone_country_code"]').forEach(sel => {
     sel.innerHTML = '';
-    PHONE_COUNTRIES.forEach(([iso, name, dial]) => {
+    [...PHONE_COUNTRIES].sort((a, b) => (a[0] === 'IN' ? -1 : b[0] === 'IN' ? 1 : a[1].localeCompare(b[1])))
+      .forEach(([iso, name, dial]) => {
       const opt = document.createElement('option');
       opt.value = '+' + dial;
       opt.textContent = `${flag(iso)} +${dial} ${name}`;
